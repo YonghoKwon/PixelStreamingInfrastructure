@@ -1,0 +1,66 @@
+# Pixel Streaming Infrastructure (UE 5.3): keep source, Docs and lockfiles.
+
+# Node.js dependencies, caches and generated frontend output
+node_modules/
+.npm/
+.cache/
+.eslintcache
+.stylelintcache
+*.tsbuildinfo
+dist/
+coverage/
+.nyc_output/
+/SignallingWebServer/Public/
+/SignallingWebServer/cirrus.exe
+/SignallingWebServer/cirrus
+
+# Node.js and TURN binaries downloaded by the platform setup scripts.
+# Use specific directory names so custom scripts and setenv stay trackable.
+**/platform_scripts/cmd/node/
+**/platform_scripts/cmd/node-v*/
+**/platform_scripts/cmd/coturn/
+**/platform_scripts/bash/node/
+**/platform_scripts/bash/node-v*/
+**/platform_scripts/bash/turnconfig/
+node-v*/
+node.zip
+node.tar.gz
+node.tar.xz
+turnserver.zip
+
+# Runtime logs and process state
+logs/
+*.log
+*.pid
+*.pid.lock
+report.*.json
+
+# Local secrets and generated authentication data
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+*.local.json
+*.local.conf
+*.local.config.js
+/SignallingWebServer/certificates/
+/SignallingWebServer/modules/authentication/config.json
+/SignallingWebServer/modules/authentication/db/users.json
+*.pem
+*.key
+*.pfx
+*.p12
+
+# Per-user IDE settings and operating system files
+.idea/
+.vscode/
+.vs/
+*.suo
+*.user
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+Desktop.ini

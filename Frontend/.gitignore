@@ -1,0 +1,7 @@
+dist/
+# Generated API documentation only; preserve the hand-written /Docs directory.
+/library/docs/
+/ui-library/docs/
+node_modules/
+types/
+.vscode
