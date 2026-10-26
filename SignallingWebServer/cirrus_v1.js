@@ -544,7 +544,7 @@ app.use((req, res, next) => {
 <body>
 	<div class="box">
 		<h2>SSL 인증서 확인 완료</h2>
-		<p>이 창은 픽셀 스트리밍 연결을 위한 SSL 인승서 수락 창입니다.</p>
+		<p>이 창은 픽셀 스트리밍 연결을 위한 SSL 인증서 수락 창입니다.</p>
 		<p>인증서가 정상적으로 수락되었습니다.</p>
 		<div class="counter" id="cnt">3</div>
 		<p>초 후 자동으로 창이 닫힙니다.</p>
@@ -1046,7 +1046,7 @@ function onStreamerDisconnected(streamer) {
 					startApp();
 				}
 			}
-		}, 5000)  // 5초 후 재확인
+		}, 5000);  // 5초 후 재확인
 	}
 }
 
@@ -1620,7 +1620,7 @@ function sendUserSessionData(serverPort) {
 	//If we are not using the frontend web server don't try and make requests to it
 	if (!config.UseFrontend)
 		return;
-	webRequest.get(`${FRONTEND_WEBSERVER}/server/requestUserSessionId?gameSessionId=${encodeURIComponent(gameSessionId || '')}&serverPort=${encodeURIComponent(serverPort || '')}&appName=${encodeURIComponent(clientConfig.AppName || '')}&appDescription=${querystring.escape(encodeURIComponent(clientConfig.AppDescription || ''))}${(typeof serverPublicIp === 'undefined' ? '' : '&serverHost=' + encodeURIComponent(serverPublicIp))}`,
+	webRequest.get(`${FRONTEND_WEBSERVER}/server/requestUserSessionId?gameSessionId=${encodeURIComponent(gameSessionId || '')}&serverPort=${encodeURIComponent(serverPort || '')}&appName=${encodeURIComponent(clientConfig.AppName || '')}&appDescription=${encodeURIComponent(clientConfig.AppDescription || '')}${(typeof serverPublicIp === 'undefined' ? '' : '&serverHost=' + encodeURIComponent(serverPublicIp))}`,
 		function (response, body) {
 			if (response.statusCode === 410) {
 				sendUserSessionData(serverPort);
