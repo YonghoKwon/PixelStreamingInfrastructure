@@ -122,7 +122,7 @@ function startStreamerWatchdog() {
 		if (!lastStreamerPingTime) return;
 		const elapsed = Date.now() - lastStreamerPingTime;
 		if (elapsed > STREAMER_PING_TIMEOUT_MS) {
-			console.logColor(logging.Red, `[WATCHDOG] 스트리머 ping 없음 (${Math.floor(elapsed/1000)}초) → 3D 앱 재시작)`);
+			console.logColor(logging.Red, `[WATCHDOG] 스트리머 ping 없음 (${Math.floor(elapsed/1000)}초) → 3D 앱 재시작`);
 			appRunning = false;
 			exec(START_CMD, (err) => {
 				if (err) console.error(`[WATCHDOG] 재시작 실패: ${err.message}`);
@@ -360,7 +360,7 @@ const START_CMD = isWindows
 	: `/dt/run.sh restart`;
 
 const STOP_CMD = isWindows
-	? `cmd /c "${RUN_DIR}\\Start_${myStreamerPort}.bat"`
+	? `cmd /c "${RUN_DIR}\\Stop_${myStreamerPort}.bat"`
 	: `/dt/run.sh stop`;
 
 console.logColor(logging.Green, `[APP] OS: ${process.platform} | Port: ${myStreamerPort} | START: ${START_CMD}`);
@@ -368,7 +368,7 @@ console.logColor(logging.Green, `[APP] OS: ${process.platform} | Port: ${myStrea
 let idleTimer = null;
 let idleTimerStartTime = null;  // 추가 - 유휴 타이머 시작 시각
 let appRunning = false;
-let appStartTime = null;  // 추가 - startApp() 호출 시작 (스트리머 미연결 타임아웃 감지용)
+let appStartTime = null;  // 추가 - startApp() 호출 시각 (스트리머 미연결 타임아웃 감지용)
 
 // 앱 시작 후 이 시간 내 스트리머가 연결 안 되면 재시작 시도
 const APP_START_TIMEOUT_MS = 90 * 1000;  // 90초
@@ -376,7 +376,7 @@ const APP_START_TIMEOUT_MS = 90 * 1000;  // 90초
 // 스트리머 없음 5초 타이머 전역 관리 (취소 가능하도록)
 let streamerGoneTimerId = null;
 
-let stopRetryTimerId = null;
+let stopRetryTimer = null;
 const STOP_RETRY_INTERVAL_MS = 15 * 1000;  // 15초마다 재시도
 const STOP_RETRY_MAX = 4;  // 최대 4회 재시도 (총 60초)
 
@@ -461,7 +461,7 @@ function stopApp() {
 	stopRetryTimer = setInterval(() => {
 		retryCount++;
 		if (streamers.size === 0) {
-			console.logColor(loggin.Green, `[APP] 스트리머 완전 종료 확인 (재시도 ${retryCount}회`);
+			console.logColor(logging.Green, `[APP] 스트리머 완전 종료 확인 (재시도 ${retryCount}회)`);
 			clearInterval(stopRetryTimer);
 			stopRetryTimer = null;
 			return;
@@ -524,7 +524,7 @@ app.use((req, res, next) => {
 		body {
 			font-family: Arial, sans-serif;
 			display: flex; flex-direction: column;
-			align-items: center; justify-countent: center;
+			align-items: center; justify-content: center;
 			height: 100vh; margin: 0;
 			background: #1a1a2e; color: #eee;
 		}
@@ -540,43 +540,40 @@ app.use((req, res, next) => {
 		p { color: #aaa; margin: 6px 0; }
 		.counter { font-size: 2em; color: #4ecca3; margin: 16px 0; }
 	</style>
-	<body>
-		<div class="box">
-			<h2>SSL 인증서 확인 완료</h2>
-			<p>이 창은 픽셀 스트리밍 연결을 위한 SSL 인승서 수락 창입니다.</p>
-			<p>인증서가 정상적으로 수락되었습니다.</p>
-			<div class="counter" id="cnt">3</div>
-			<p>초 후 자동으로 창이 닫힙니다.</p>
-		</div>
-		<script>
-			var sec = 3;
-            var el = document.getElementById('cnt');
-            var t = setInterval(function() => {
-                sec--;
-                el.textContent = sec;
-                if (sec <= 0) {
-                    clearInterval(t);
-                    // 창 닫기 시도 (팝업/탭 공통 대응)
-                    window.close();
-                    // 창 닫기가 안되는 경우 이전 페이지로 이동
-                    setTimeout(function() {
-                       if (!window.closed) {
-                           if (window.history.length > 1) {
-                               window.history.back();
-                           } else {
-                               document.querySelector('.box').innerHTML = 
-                               	'<h2>인증 완료</h2><p>이 창을 직접 닫아 주세요.</p>';
-                           }
-                       }
-                    }, 500);
-                }
-            }, 1000);
-		</script>
-	</body>
 </head>
-
-
-
+<body>
+	<div class="box">
+		<h2>SSL 인증서 확인 완료</h2>
+		<p>이 창은 픽셀 스트리밍 연결을 위한 SSL 인승서 수락 창입니다.</p>
+		<p>인증서가 정상적으로 수락되었습니다.</p>
+		<div class="counter" id="cnt">3</div>
+		<p>초 후 자동으로 창이 닫힙니다.</p>
+	</div>
+	<script>
+		var sec = 3;
+		var el = document.getElementById('cnt');
+		var t = setInterval(function() {
+			sec--;
+			el.textContent = sec;
+			if (sec <= 0) {
+				clearInterval(t);
+				// 창 닫기 시도 (팝업/탭 공통 대응)
+				window.close();
+				// 창 닫기가 안되는 경우 이전 페이지로 이동
+				setTimeout(function() {
+				   if (!window.closed) {
+					   if (window.history.length > 1) {
+						   window.history.back();
+					   } else {
+						   document.querySelector('.box').innerHTML = 
+							'<h2>인증 완료</h2><p>이 창을 직접 닫아 주세요.</p>';
+					   }
+				   }
+				}, 500);
+			}
+		}, 1000);
+	</script>
+</body>
 </html>`);
 });
 
@@ -756,7 +753,7 @@ class Player {
 		logOutgoing(this.streamerId, msg);
 		this.sendFrom(msg);
 		
-		// 이중 추가 (SFU 제외)
+		// 이 줄 추가 (SFU 제외)
 		if (this.type !== PlayerType.SFU && this.whoSendsOffer === WhoSendsOffer.Streamer) {
 			startOfferWaitTimer(this.id, this.streamerId);
 		}
@@ -964,7 +961,7 @@ function registerStreamer(id, streamer) {
 	if (streamerGoneTimerId) {
 		clearTimeout(streamerGoneTimerId);
 		streamerGoneTimerId = null;
-		console.logColor(logging.Green, `[App] 스트리머 등록 → 스트리머 없음 타이머 취소`);
+		console.logColor(logging.Green, `[APP] 스트리머 등록 → 스트리머 없음 타이머 취소`);
 	}
 	console.logColor(logging.Green, `[${new Date().toISOString()}] Registered new streamer: ${streamer.id} | Total streamers: ${streamers.size}`);
 	
@@ -973,13 +970,13 @@ function registerStreamer(id, streamer) {
 	const waitingPlayers = [...players.values()].filter(p => !p.streamerId && !p.isSFU());
 	if (waitingPlayers.length > 0) {
 		const ids = [...streamers.keys()];
-		const listMsg = { type: 'streamer', ids };
+		const listMsg = { type: 'streamerList', ids };
 		waitingPlayers.forEach(p => {
 			console.logColor(logging.Green, `[STREAMER] 대기 플레이어 ${p.id}에게 streamerList 자동 push: ${JSON.stringify(ids)}`);
 			try { p.sendTo(listMsg); } catch (e) {}
 		});
 		
-		// [추가] 대기 중인 플레이어가 1며이고 스트리머도 1개면 자동 subscribe 시도
+		// [추가] 대기 중인 플레이어가 1명이고 스트리머도 1개면 자동 subscribe 시도
 		// 클라이언트가 listStreamers 재시도 대신 포기하는 경우를 서버에서 보완
 		if (waitingPlayers.length === 1 && streamers.size === 1) {
 			const soloPlayer = waitingPlayers[0];
@@ -1010,7 +1007,7 @@ function onStreamerDisconnected(streamer) {
 	// → Map에 등록된 스트리머와 close 이벤트를 발생시킨 streamer의 ws 인스턴스가 다르면 무시
 	const currentRegistered = streamers.get(streamer.id);
 	if (currentRegistered !== streamer) {
-		console.logColor(logging.Orange, `[${new Date().toISOString()}] onStreamerDisconnected: ${streamer.id} - 이미 새 스트리머로 교체됨 → (race condition 방지)`);
+		console.logColor(logging.Orange, `[${new Date().toISOString()}] onStreamerDisconnected: ${streamer.id} - 이미 새 스트리머로 교체됨 → 무시 (race condition 방지)`);
 		return;
 	}
 
@@ -1031,7 +1028,7 @@ function onStreamerDisconnected(streamer) {
 	// 스트리머가 끊기면 appRunning 상태 재동기화
 	if (streamers.size === 0) {
 		if (streamerGoneTimerId) clearTimeout(streamerGoneTimerId);  // 기존 타이머 중복 방지
-		streamerGoneTimerId = setInterval(() => {
+		streamerGoneTimerId = setTimeout(() => {
 			streamerGoneTimerId = null;
 			if (streamers.size === 0 && !zombieRestartInProgress) {  // 좀비 재시작 중이면 덮어쓰지 않음
 				appRunning = false;
@@ -1369,7 +1366,7 @@ function onPlayerMessageListStreamers(player, msg) {
 
 	// 스트리머가 없지만 앱 시작 중이면 로그로 상태 기록
 	// (registerStreamer에서 스트리머 등록 시 대기 플레이어에게 자동 push 처리됨)
-	if (replay.ids.length === 0 && appRunning) {
+	if (reply.ids.length === 0 && appRunning) {
 		console.logColor(logging.Yellow,
 			`[WAIT] Player ${player.id} listStreamers 요청 but 스트리머 없음 (앱 시작 중...) → 등록 시 자동 push 예정`	
 		);
@@ -1539,7 +1536,6 @@ if (config.UseMatchmaker) {
 		message = {
 			type: 'connect',
 			address: typeof serverPublicIp === 'undefined' ? '127.0.0.1' : serverPublicIp,
-			https: config.UseHTTPS,
 			port: config.UseHTTPS ? httpsPort : httpPort,
 			ready: streamers.size > 0,
 			playerConnected: playerConnected
@@ -1624,7 +1620,7 @@ function sendUserSessionData(serverPort) {
 	//If we are not using the frontend web server don't try and make requests to it
 	if (!config.UseFrontend)
 		return;
-	webRequest.get(`${FRONTEND_WEBSERVER}/server/requestUserSessionId?gameSessionId=${encodeURIComponent(gameSessionId || '')}&serverPort=${encodeURIComponent(serverPort || '')}&appName=${querystring.escape(encodeURIComponent(clientConfig.AppName || ''))}&appDescription=${querystring.escape(encodeURIComponent(clientConfig.AppDescription || ''))}${(typeof serverPublicIp === 'undefined' ? '' : '&serverHost=' + encodeURIComponent(serverPublicIp))}`,
+	webRequest.get(`${FRONTEND_WEBSERVER}/server/requestUserSessionId?gameSessionId=${encodeURIComponent(gameSessionId || '')}&serverPort=${encodeURIComponent(serverPort || '')}&appName=${encodeURIComponent(clientConfig.AppName || '')}&appDescription=${querystring.escape(encodeURIComponent(clientConfig.AppDescription || ''))}${(typeof serverPublicIp === 'undefined' ? '' : '&serverHost=' + encodeURIComponent(serverPublicIp))}`,
 		function (response, body) {
 			if (response.statusCode === 410) {
 				sendUserSessionData(serverPort);
@@ -1654,7 +1650,7 @@ function sendServerDisconnect() {
 	if (!config.UseFrontend)
 		return;
 	try {
-		webRequest.get(`${FRONTEND_WEBSERVER}/server/serverDisconnected?gameSessionId=${encodeURIComponent(gameSessionId || '')}&appName=${querystring.escape(encodeURIComponent(clientConfig.AppName || ''))}`,
+		webRequest.get(`${FRONTEND_WEBSERVER}/server/serverDisconnected?gameSessionId=${encodeURIComponent(gameSessionId || '')}&appName=${encodeURIComponent(clientConfig.AppName || '')}`,
 			function (response, body) {
 				if (response.statusCode === 200) {
 					console.log('serverDisconnected acknowledged by Frontend');
@@ -1684,7 +1680,7 @@ function sendPlayerConnectedToFrontend() {
 	if (!config.UseFrontend)
 		return;
 	try {
-		webRequest.get(`${FRONTEND_WEBSERVER}/server/clientConnected?gameSessionId=${encodeURIComponent(gameSessionId || '')}&appName=${querystring.escape(encodeURIComponent(clientConfig.AppName || ''))}`,
+		webRequest.get(`${FRONTEND_WEBSERVER}/server/clientConnected?gameSessionId=${encodeURIComponent(gameSessionId || '')}&appName=${encodeURIComponent(clientConfig.AppName || '')}`,
 			function (response, body) {
 				if (response.statusCode === 200) {
 					console.log('clientConnected acknowledged by Frontend');
@@ -1714,7 +1710,7 @@ function sendPlayerDisconnectedToFrontend() {
 	if (!config.UseFrontend)
 		return;
 	try {
-		webRequest.get(`${FRONTEND_WEBSERVER}/server/clientDisconnected?gameSessionId=${encodeURIComponent(gameSessionId || '')}&appName=${querystring.escape(encodeURIComponent(clientConfig.AppName || ''))}`,
+		webRequest.get(`${FRONTEND_WEBSERVER}/server/clientDisconnected?gameSessionId=${encodeURIComponent(gameSessionId || '')}&appName=${encodeURIComponent(clientConfig.AppName || '')}`,
 			function (response, body) {
 				if (response.statusCode === 200) {
 					console.log('clientDisconnected acknowledged by Frontend');
@@ -1811,7 +1807,7 @@ setInterval(() => {
 		idleStr = `종료 재시도 중 (스트리머 ${streamers.size}개 남음)`;		
 	} else if (idleTimerStartTime) {
 		const idleElapsedSec = Math.floor((Date.now() - idleTimerStartTime) / 1000);
-		const idleLimitSec = Math.floor(APP_IDLE_TIMEOUT_MS / 10000);
+		const idleLimitSec = Math.floor(APP_IDLE_TIMEOUT_MS / 1000);
 		const remainSec = Math.max(0, idleLimitSec - idleElapsedSec);
 		const em = Math.floor(idleElapsedSec / 60);
 		const es = idleElapsedSec % 60;
@@ -1827,7 +1823,7 @@ setInterval(() => {
 	);
 	if (streamers.size > 0) {
 		for (let [id, streamer] of streamers) {
-			console.logColor(logging.Cyan, `- Streamer: ${id} | wsState: ${streamer.ws.readyState} (1=OPEN, 3=CLOSED`);
+			console.logColor(logging.Cyan, `- Streamer: ${id} | wsState: ${streamer.ws.readyState} (1=OPEN, 3=CLOSED)`);
 		}
 	} else {
 		console.logColor(logging.Orange, `No streamers connected!`);	
