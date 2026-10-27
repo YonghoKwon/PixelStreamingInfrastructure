@@ -96,28 +96,6 @@ function startStreamerWatchdog() {
 	if (streamerWatchdogTimer) clearInterval(streamerWatchdogTimer);
 	streamerWatchdogTimer = setInterval(() => {
 		if (zombieRestartInProgress) return;  // 이 줄 추가 필요
-		
-		// [신규] 앱 시작 후 APP_START_TIMEOUT_MS 내 스트리머 미연결 감지
-		// Watch_Streamers 등이 프로세스를 죽였거나 앱 내부 오류로 연결 못 한 경우 재시작
-		if (appRunning && streamers.size === 0 && appStartTime) {
-			const elapsed = Date.now() - appStartTime;
-			if (elapsed > APP_START_TIMEOUT_MS) {
-				console.logColor(logging.Red,
-					`[WATCHDOG] 앱 시작 후 ${Math.floor(elapsed/1000)}초 경과 but 스트리머 미연결 → appRunning 리셋 후 재시작 시도`
-				);
-				appRunning = false;
-				appStartTime = null;
-				if (players.size > 0) {
-					console.logColor(logging.Yellow, `[WATCHDOG] 대기 플레이어 ${players.size}명 → startApp 재호출`);
-					startApp();
-				} else {
-					// 대기 플레이어 없으면 워치독 중단 (다음 접속 시 재시작됨)
-					stopStreamerWatchdog();
-				}
-				return;
-			}
-		}
-		
 		if (streamers.size === 0) return;  // 스트리머 없으면 체크 불필요
 		if (!lastStreamerPingTime) return;
 		const elapsed = Date.now() - lastStreamerPingTime;
@@ -368,10 +346,6 @@ console.logColor(logging.Green, `[APP] OS: ${process.platform} | Port: ${myStrea
 let idleTimer = null;
 let idleTimerStartTime = null;  // 추가 - 유휴 타이머 시작 시각
 let appRunning = false;
-let appStartTime = null;  // 추가 - startApp() 호출 시각 (스트리머 미연결 타임아웃 감지용)
-
-// 앱 시작 후 이 시간 내 스트리머가 연결 안 되면 재시작 시도
-const APP_START_TIMEOUT_MS = 90 * 1000;  // 90초
 
 // 스트리머 없음 5초 타이머 전역 관리 (취소 가능하도록)
 let streamerGoneTimerId = null;
@@ -418,7 +392,6 @@ function startApp() {
 	}
 	
 	appRunning = true;  // ← exec 호출 전에 즉시 true로 설정 (중복 방지)
-	appStartTime = Date.now();
 	console.logColor(logging.Green, `[APP] 3D 앱 시작 요청...`);
 	
 	exec(START_CMD, (err) => {
@@ -450,7 +423,6 @@ function stopApp() {
 	forceCloseAllStreamers('idle shutdown');
 	
 	appRunning = false;
-	appStartTime = null;  // 추가
 	stopStreamerWatchdog();
 	lastStreamerPingTime = null;
 
@@ -956,7 +928,6 @@ function registerStreamer(id, streamer) {
 		delete streamer.idTimer;
 	}
 	streamers.set(id, streamer);
-	appStartTime = null;  // 추가 - 스트리머 연결 성공 → 타임아웃 감지 불필요
 	// 스트리머 등록 시 "스트리머 없음" 타이머 취소 (appRunning=false로 잘못 변경 방지)
 	if (streamerGoneTimerId) {
 		clearTimeout(streamerGoneTimerId);
@@ -1032,19 +1003,7 @@ function onStreamerDisconnected(streamer) {
 			streamerGoneTimerId = null;
 			if (streamers.size === 0 && !zombieRestartInProgress) {  // 좀비 재시작 중이면 덮어쓰지 않음
 				appRunning = false;
-				appStartTime = null;  // 추가
 				console.logColor(logging.Orange, `[APP] 스트리머 없음 → appRunning=false`);
-				
-				// [핵심 버그 수정] 스트리머 종료 5초 타이머 완료 시점에 대기 플레이어가 있으면 즉시 재시작
-				// 시나리오: Watch_Streamers가 프로세스 종료 → 5초 내 플레이어 재접속 →
-				// startApp()이 appRunning=true 로 스킵됨 → 5초 후 appRunning=false 전환 →
-				// 하지만 아무도 startApp() 재호출 안 함 → 앱 영구 미기동 버그 수정
-				if (players.size > 0) {
-					console.logColor(logging.Yellow,
-						`[APP] 스트리머 종료 후 대기 플레이어 ${players.size}명 감지 → 자동 재시작`
-					);
-					startApp();
-				}
 			}
 		}, 5000);  // 5초 후 재확인
 	}
