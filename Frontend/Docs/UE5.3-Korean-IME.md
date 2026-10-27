@@ -1,9 +1,12 @@
 # UE 5.3 한글 IME
 
-기본 TypeScript 화면은 `YonghoKwon/PixelStreamingFrontendLib`의 IME 수정본을 사용합니다.
-공식 npm 1.0.9 원본은 해당 저장소의 main/원본 태그에 보존돼 있으며,
-소비자 의존성은 수정 커밋 `cf9173fee88be89646385f467f173046e25fde83`의 HTTPS 아카이브와
-lockfile 무결성 값으로 고정했습니다. SSH 키나 Epic npm scope 게시 권한이 필요하지 않습니다.
+기본 TypeScript 화면은 회사 내부 배포용
+`@epicgames-ps/lib-pixelstreamingfrontend-ue5.3@1.0.10` npm 패키지를 사용합니다.
+공식 npm 1.0.9 원본은 라이브러리 저장소의 원본 태그에 보존돼 있습니다.
+라이브러리를 빌드한 `.tgz`를 회사 Nexus에 등록하고, 기존 회사 npm/Nexus 자동 설정으로 받습니다.
+소비자는 GitHub 소스·Git URL·GitHub 아카이브에 의존하지 않습니다.
+회사 레지스트리 주소·인증 설정은 변경하지 않습니다. Lockfile에는 버전·무결성을 유지하고
+레지스트리 tarball URL은 고정하지 않습니다. Lockfile 갱신은 `npm run lock:portable`을 사용합니다.
 
 ```sh
 cd Frontend/implementations/typescript
