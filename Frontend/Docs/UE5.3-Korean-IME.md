@@ -1,12 +1,15 @@
 # UE 5.3 한글 IME
 
-기본 TypeScript 화면은 회사 내부 배포용
+기본 TypeScript 화면은 프로젝트에 포함된
 `@epicgames-ps/lib-pixelstreamingfrontend-ue5.3@1.0.10` npm 패키지를 사용합니다.
 공식 npm 1.0.9 원본은 라이브러리 저장소의 원본 태그에 보존돼 있습니다.
-라이브러리를 빌드한 `.tgz`를 회사 Nexus에 등록하고, 기존 회사 npm/Nexus 자동 설정으로 받습니다.
-소비자는 GitHub 소스·Git URL·GitHub 아카이브에 의존하지 않습니다.
-회사 레지스트리 주소·인증 설정은 변경하지 않습니다. Lockfile에는 버전·무결성을 유지하고
-레지스트리 tarball URL은 고정하지 않습니다. Lockfile 갱신은 `npm run lock:portable`을 사용합니다.
+빌드된 `.tgz`는 `Frontend/vendor`에 있으며 package.json과 lockfile이 이 로컬 파일을 참조합니다.
+새 환경에서도 이 SDK를 Nexus·GitHub·공개 npm에서 다운로드하지 않습니다.
+`Frontend` 폴더 전체를 함께 복사하거나 체크아웃해야 상대 경로가 유지됩니다.
+Webpack·TypeScript·UI 라이브러리 등 나머지 의존성은 기존 npm 설정으로 설치합니다.
+완전 오프라인 설치에는 해당 의존성의 npm 캐시도 미리 준비해야 합니다.
+회사 레지스트리 주소·인증 설정은 변경하지 않습니다. Lockfile의 버전·무결성을 유지하고,
+갱신 시 `npm run lock:portable`을 사용합니다. SDK 교체 절차와 해시는 `Frontend/vendor/README.md`에 있습니다.
 
 ```sh
 cd Frontend/implementations/typescript
@@ -15,6 +18,8 @@ npm run build
 ```
 
 생성물은 `SignallingWebServer/Public`입니다. 기존 배포 절차로 이 파일을 웹서버에 배치합니다.
+`build-all`·`build-dev-all`도 포함된 SDK를 사용하는 일반 빌드의 별칭이며,
+한글 수정이 없는 별도 원본 라이브러리를 npm link로 연결하지 않습니다.
 3D의 텍스트 입력칸을 클릭한 뒤 바로 한글을 입력합니다. 별도 IME 포커스 버튼은 없습니다.
 기본 마우스 모드는 hovering이며 명시적인 URL 옵션은 유지합니다.
 `?EnableIME=false`로 기존 입력 경로를 선택할 수 있습니다.

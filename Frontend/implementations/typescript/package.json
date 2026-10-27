@@ -10,8 +10,8 @@
     "watch": "npx webpack --watch",
     "serve": "webpack serve --config webpack.dev.js",
     "serve-prod": "webpack serve --config webpack.prod.js",
-    "build-all": "npm link ../../library ../../ui-library && cd ../../library && npm run build && cd ../ui-library && npm run build-all && cd ../implementations/typescript && npm run build",
-    "build-dev-all": "npm link ../../library ../../ui-library && cd ../../library && npm run build-dev && cd ../ui-library && npm run build-dev-all && cd ../implementations/typescript && npm run build-dev",
+    "build-all": "npm run build",
+    "build-dev-all": "npm run build-dev",
     "lock:portable": "npm install --package-lock-only --ignore-scripts --omit-lockfile-registry-resolved --no-audit --no-fund"
   },
   "devDependencies": {
@@ -27,7 +27,7 @@
     "webpack-dev-server": "^4.11.1"
   },
   "dependencies": {
-    "@epicgames-ps/lib-pixelstreamingfrontend-ue5.3": "1.0.10",
+    "@epicgames-ps/lib-pixelstreamingfrontend-ue5.3": "file:../../vendor/epicgames-ps-lib-pixelstreamingfrontend-ue5.3-1.0.10.tgz",
     "@epicgames-ps/lib-pixelstreamingfrontend-ui-ue5.3": "1.0.9"
   },
   "overrides": {
