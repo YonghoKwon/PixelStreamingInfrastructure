@@ -81,7 +81,6 @@ function startOfferWaitTimer(playerId, streamerId) {
 				// Use the existing 90-second startup watchdog rather than an immediate retry loop.
 			} else {
 				appRunning = true;
-				lastStreamerPingTime = Date.now();
 				console.logColor(logging.Green, `[ZOMBIE] 3D 앱 재시작 완료`);
 				// 재시작 완료 후 아직 연결 중인 대기 플레이어에게 streamerList push는
 				// 스트리머가 실제로 등록되는 시점(registerStreamer)에서 자동으로 처리됨
@@ -102,7 +101,7 @@ function clearOfferWaitTimer(playerId) {
 let lastStreamerPingTime = null;
 let lastStreamerRegistrationTime = null;
 let streamerWatchdogTimer = null;
-const STREAMER_PING_TIMEOUT_MS = 1 * 60 * 1000;  // 1분 stale; 열린 브라우저가 있을 때만 복구
+const STREAMER_PING_TIMEOUT_MS = 1 * 60 * 1000;  // 진단용 경과 시간; 재시작 조건이 아님
 
 function startStreamerWatchdog() {
 	if (streamerWatchdogTimer) clearInterval(streamerWatchdogTimer);
@@ -128,23 +127,9 @@ function startStreamerWatchdog() {
 			}
 		}
 		
-		const health = getStreamerHealth();
-		if (health.state === 'stale') {
-			const elapsed = health.ageMs;
-			console.logColor(logging.Red, `[WATCHDOG] 스트리머 ping 없음 (${Math.floor(elapsed/1000)}초) → 3D 앱 재시작`);
-			appRunning = false;
-			runAppCommand(START_CMD, (err) => {
-				if (err) {
-					appRunning = appStreamerCount(true) > 0;
-					console.error(`[WATCHDOG] 재시작 실패: ${err.message}`);
-				}
-				else {
-					appRunning = true;
-					lastStreamerPingTime = Date.now();
-					console.logColor(logging.Green, `[WATCHDOG] 재시작 완료`);
-				}
-			});
-		}
+		// UE 5.3's JSON keepalive itself defaults to a 60-second game-world
+		// timer. Delay/absence is diagnostic telemetry, not proof of a dead UE
+		// process or failed WebRTC media. Never restart from ping age alone.
 	}, 30 * 1000);  // 30초마다 체크
 }
 
