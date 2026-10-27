@@ -1,0 +1,190 @@
+'use strict';
+
+const fs = require('node:fs');
+const path = require('node:path');
+const { spawn } = require('node:child_process');
+
+const secretKey = /password|passphrase|credential|secret|token|authorization|api[-_]?key|private[-_]?key/i;
+
+function createLogRedactor() {
+    const secrets = new Set();
+    function remember(value) {
+        if (!value || typeof value !== 'object') return;
+        for (const [key, item] of Object.entries(value)) {
+            if (secretKey.test(key) && typeof item === 'string' && item.length >= 4) {
+                let encoded = item;
+                for (let i = 0; i < 3; i++) { secrets.add(encoded); encoded = JSON.stringify(encoded).slice(1, -1); }
+            }
+            if (typeof item === 'string') {
+                try { remember(JSON.parse(item)); } catch { /* May be an ordinary string. */ }
+            } else remember(item);
+        }
+    }
+    function text(value) {
+        let out = value;
+        for (const secret of secrets) out = out.split(secret).join('[REDACTED]');
+        out = out.replace(/((?:["']?)(?:password|passphrase|credential|secret|token|authorization|api[-_]?key|private[-_]?key)(?:["']?)\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;}]+)/gi, '$1"[REDACTED]"');
+        out = out.replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@/gi, '$1[REDACTED]@');
+        out = out.replace(/(\b(?:turns?|stuns?):)[^\s/@]+@/gi, '$1[REDACTED]@');
+        out = out.replace(/(\ba=ice-(?:pwd|ufrag):)[^\s\\]+/gi, '$1[REDACTED]');
+        out = out.replace(/([?&](?:access_token|token|api_key|client_secret|password|credential)=)[^&#\s]+/gi, '$1[REDACTED]');
+        return out;
+    }
+    function redact(value, seen = new WeakSet()) {
+        if (typeof value === 'string') {
+            if (/^\s*[\[{]/.test(value)) {
+                try { return JSON.stringify(redact(JSON.parse(value), seen)); } catch { /* Not complete JSON. */ }
+            }
+            return text(value);
+        }
+        if (!value || typeof value !== 'object') return value;
+        if (value instanceof Error) return { name: value.name, code: value.code, message: text(value.message) };
+        if (Buffer.isBuffer(value)) return redact(value.toString('utf8'), seen);
+        if (seen.has(value)) return '[Circular]';
+        seen.add(value);
+        if (Array.isArray(value)) return value.map(item => redact(item, seen));
+        return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, secretKey.test(key) ? '[REDACTED]' : redact(item, seen)]));
+    }
+    function install(target) {
+        for (const method of ['log', 'warn', 'error', 'logColor']) {
+            if (typeof target[method] !== 'function') continue;
+            const original = target[method].bind(target);
+            target[method] = (...args) => original(...args.map(arg => redact(arg)));
+        }
+    }
+    return { remember, redact, install };
+}
+
+function loadConfig(file, defaults, argv, fileSystem = fs) {
+    let loaded = {};
+    try {
+        loaded = JSON.parse(fileSystem.readFileSync(file, 'utf8'));
+        if (!loaded || typeof loaded !== 'object' || Array.isArray(loaded)) throw new Error('invalid root');
+    } catch (error) {
+        if (error.code !== 'ENOENT') {
+            const failure = new Error('Cannot read configuration: expected a readable JSON object (contents omitted).');
+            failure.code = 'INVALID_CONFIG';
+            throw failure;
+        }
+    }
+    const cli = { ...argv };
+    for (const key of ['_', '$0', 'help', 'version']) delete cli[key];
+    const config = { ...defaults, ...loaded, ...cli };
+    for (const [key, min, max] of [['AppCommandTimeoutMs', 1000, 1800000], ['AppCommandKillGraceMs', 100, 60000], ['AppCommandMaxTimeouts', 1, 10]]) {
+        if (!Number.isInteger(config[key]) || config[key] < min || config[key] > max) {
+            const error = new Error(`Invalid ${key}: expected integer ${min}..${max} (value omitted).`);
+            error.code = 'INVALID_CONFIG';
+            throw error;
+        }
+    }
+    if (!['certificate-only', 'web'].includes(config.HttpMode)) {
+        const error = new Error('Invalid HttpMode: use certificate-only or web (value omitted).');
+        error.code = 'INVALID_CONFIG';
+        throw error;
+    }
+    return config;
+}
+
+function certificatePath(baseDirectory, configuredPath) {
+    if (typeof configuredPath !== 'string' || !configuredPath.trim()) throw new Error('Certificate path must be a nonempty string.');
+    return path.isAbsolute(configuredPath) ? path.normalize(configuredPath) : path.resolve(baseDirectory, configuredPath);
+}
+
+// Owns only the processes it spawns. No global process-name or UE PID searches.
+function createCommandRunner(options = {}) {
+    const launch = options.spawn || spawn;
+    const platform = options.platform || process.platform;
+    const kill = options.kill || ((pid, signal) => process.kill(pid, signal));
+    const later = options.setTimeout || setTimeout;
+    const cancel = options.clearTimeout || clearTimeout;
+    const now = options.now || Date.now;
+    const hasLiveApp = options.hasLiveApp || (() => false);
+    const timeoutMs = options.timeoutMs || 60000;
+    const graceMs = options.graceMs || 5000;
+    const maxTimeouts = options.maxTimeouts || 3;
+    let active = null;
+    let blocked = null;
+    let timeouts = 0;
+    let lastError = null;
+    function snapshot() {
+        return { state: blocked ? 'blocked' : active ? 'running' : 'idle', operation: active?.kind || null, consecutiveTimeouts: timeouts, lastErrorCode: lastError, blockedReason: blocked };
+    }
+    function run(command, callback, kind = 'start') {
+        if (active || blocked) return false;
+        const op = { kind, child: null, exited: false, finished: false, timedOut: false, timers: [], stdout: '', stderr: '' };
+        active = op;
+        function timer(fn, delay) { const handle = later(fn, delay); op.timers.push(handle); return handle; }
+        function finish(error) {
+            if (op.finished) return;
+            op.finished = true;
+            for (const handle of op.timers) cancel(handle);
+            if (active === op) active = null;
+            if (error) lastError = error.code || 'APP_COMMAND_FAILED';
+            callback(error || null, op.stdout, op.stderr);
+        }
+        function groupAlive() {
+            try { kill(-op.child.pid, 0); return true; }
+            catch (error) { if (error.code === 'ESRCH') return false; throw error; }
+        }
+        function signalGroup(signal) {
+            try { kill(-op.child.pid, signal); }
+            catch (error) { if (error.code !== 'ESRCH') throw error; }
+        }
+        const timeoutError = () => Object.assign(new Error('3D launcher command exceeded its completion deadline.'), { code: 'APP_COMMAND_TIMEOUT' });
+        function timeout() {
+            if (op.finished) return;
+            op.timedOut = true;
+            timeouts++;
+            if (timeouts >= maxTimeouts) blocked = 'TIMEOUT_LIMIT';
+            if (hasLiveApp()) {
+                // A foreground/blocked launcher must not kill an already registered UE.
+                blocked = 'TIMEOUT_WITH_LIVE_APP';
+                return finish(timeoutError());
+            }
+            if (!Number.isInteger(op.child?.pid) || op.child.pid <= 1) {
+                blocked = 'INVALID_OWNED_PID';
+                return finish(timeoutError());
+            }
+            if (platform === 'win32') {
+                // Killing cmd.exe cannot prove its descendants ended; fail closed.
+                blocked = 'WINDOWS_TIMEOUT_REQUIRES_OWNED_TREE_CLEANUP';
+                if (!op.exited) op.child.kill('SIGTERM');
+                return finish(timeoutError());
+            }
+            const termDeadline = now() + graceMs;
+            const finalDeadline = termDeadline + graceMs;
+            let sentKill = false;
+            function poll() {
+                if (op.finished) return;
+                try {
+                    if (!groupAlive()) return finish(timeoutError());
+                    if (!sentKill && now() >= termDeadline) { signalGroup('SIGKILL'); sentKill = true; }
+                    if (now() >= finalDeadline) {
+                        blocked = 'APP_COMMAND_CLEANUP_UNCONFIRMED';
+                        return finish(timeoutError());
+                    }
+                    timer(poll, 50);
+                } catch {
+                    blocked = 'APP_COMMAND_CLEANUP_UNCONFIRMED';
+                    finish(timeoutError());
+                }
+            }
+            try { signalGroup('SIGTERM'); poll(); }
+            catch { blocked = 'APP_COMMAND_CLEANUP_UNCONFIRMED'; finish(timeoutError()); }
+        }
+        try {
+            op.child = launch(command, [], { shell: true, detached: platform !== 'win32', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+            for (const channel of ['stdout', 'stderr']) op.child[channel]?.on('data', bytes => { op[channel] = (op[channel] + bytes.toString()).slice(0, 65536); });
+            op.child.once('error', error => finish(error));
+            op.child.once('exit', (code, signal) => {
+                op.exited = true;
+                if (!op.timedOut) finish(code === 0 ? null : Object.assign(new Error('3D launcher command failed.'), { code: 'APP_COMMAND_FAILED', exitCode: code, signal }));
+            });
+            if (!op.finished) timer(timeout, timeoutMs);
+        } catch (error) { finish(error); }
+        return true;
+    }
+    return { run, snapshot, isBlocked: () => !!blocked, noteRegistered: () => { if (!blocked) timeouts = 0; } };
+}
+
+module.exports = { createLogRedactor, loadConfig, certificatePath, createCommandRunner };
