@@ -11,7 +11,8 @@
     "serve": "webpack serve --config webpack.dev.js",
     "serve-prod": "webpack serve --config webpack.prod.js",
     "build-all": "npm link ../../library ../../ui-library && cd ../../library && npm run build && cd ../ui-library && npm run build-all && cd ../implementations/typescript && npm run build",
-    "build-dev-all": "npm link ../../library ../../ui-library && cd ../../library && npm run build-dev && cd ../ui-library && npm run build-dev-all && cd ../implementations/typescript && npm run build-dev"
+    "build-dev-all": "npm link ../../library ../../ui-library && cd ../../library && npm run build-dev && cd ../ui-library && npm run build-dev-all && cd ../implementations/typescript && npm run build-dev",
+    "lock:portable": "npm install --package-lock-only --ignore-scripts --omit-lockfile-registry-resolved --no-audit --no-fund"
   },
   "devDependencies": {
     "css-loader": "^6.7.3",
@@ -21,12 +22,15 @@
     "terser-webpack-plugin": "^5.3.10",
     "ts-loader": "^9.5.1",
     "typescript": "^5.0.0",
-    "webpack": "^5.94.0",
+    "webpack": "5.101.3",
     "webpack-cli": "^5.1.4",
     "webpack-dev-server": "^4.11.1"
   },
   "dependencies": {
-    "@epicgames-ps/lib-pixelstreamingfrontend-ue5.3": "1.0.9",
+    "@epicgames-ps/lib-pixelstreamingfrontend-ue5.3": "1.0.10",
     "@epicgames-ps/lib-pixelstreamingfrontend-ui-ue5.3": "1.0.9"
+  },
+  "overrides": {
+    "schema-utils@^4.0.0": "4.3.2"
   }
 }
