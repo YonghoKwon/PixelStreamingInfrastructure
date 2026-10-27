@@ -2,7 +2,7 @@
 
 export * from '@epicgames-ps/lib-pixelstreamingfrontend-ue5.3';
 export * from '@epicgames-ps/lib-pixelstreamingfrontend-ui-ue5.3';
-import { Config, PixelStreaming } from '@epicgames-ps/lib-pixelstreamingfrontend-ue5.3';
+import { Config, Flags, PixelStreaming } from '@epicgames-ps/lib-pixelstreamingfrontend-ue5.3';
 import { Application, PixelStreamingApplicationStyle } from '@epicgames-ps/lib-pixelstreamingfrontend-ui-ue5.3';
 const PixelStreamingApplicationStyles =
     new PixelStreamingApplicationStyle();
@@ -14,6 +14,10 @@ document.body.onload = function() {
 
 	// Create a config object
 	const config = new Config({ useUrlParams: true });
+	// IME is enabled by default in the pinned UE5.3 fork. Keep URL opt-outs.
+	if (!new URLSearchParams(location.search).has(Flags.HoveringMouseMode)) {
+		config.setFlagEnabled(Flags.HoveringMouseMode, true);
+	}
 
 	// Create a Native DOM delegate instance that implements the Delegate interface class
 	const stream = new PixelStreaming(config);

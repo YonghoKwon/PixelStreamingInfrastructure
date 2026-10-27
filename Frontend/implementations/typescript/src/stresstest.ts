@@ -24,8 +24,8 @@ export class StressTester {
 	streamCreationIntervalMs: number;
 	streamDeletionIntervalMs: number;
 	pixelStreamingFrames: Array<PixelStreamingFrame>;
-	creationIntervalHandle: NodeJS.Timer;
-	deletionIntervalHandle: NodeJS.Timer;
+	creationIntervalHandle: ReturnType<typeof setInterval>;
+	deletionIntervalHandle: ReturnType<typeof setInterval>;
 	streamsContainer: HTMLElement;
 
 	constructor() {
