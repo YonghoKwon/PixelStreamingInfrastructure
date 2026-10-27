@@ -202,7 +202,7 @@ test('existing mDNS rewriting and BrowserSendOffer behavior are unchanged', () =
     assert.match(streamer.sent.find(message => message.type === 'iceCandidate').candidate.candidate, /127\.0\.0\.1 50123/);
 });
 
-test('v1 configuration, TLS, HTTP page, ICE rewriting, and timing constants are unchanged', () => {
+test('production v1 configuration, protocol and shared timings match; removed startup retry stays explicit', () => {
     const read = file => fs.readFileSync(path.resolve(__dirname, '..', file), 'utf8').replace(/\r\n/g, '\n');
     const v1 = read('cirrus_v1.js'); const v2 = read('cirrus_v2_codex.js');
     const section = (source, start, end) => source.slice(source.indexOf(start), source.indexOf(end, source.indexOf(start)));
@@ -212,10 +212,14 @@ test('v1 configuration, TLS, HTTP page, ICE rewriting, and timing constants are 
         ['function forwardPlayerMessage(', 'function onPlayerDisconnected(']
     ]) assert.equal(section(v2, start, end), section(v1, start, end));
     for (const name of ['OFFER_WAIT_TIMEOUT_MS', 'STREAMER_PING_TIMEOUT_MS', 'APP_IDLE_TIMEOUT_MS',
-        'APP_START_TIMEOUT_MS', 'STOP_RETRY_INTERVAL_MS', 'STOP_RETRY_MAX']) {
+        'STOP_RETRY_INTERVAL_MS', 'STOP_RETRY_MAX']) {
         const expression = new RegExp('^const ' + name + ' = ([^;]+);', 'm');
         assert.equal(v2.match(expression)[1], v1.match(expression)[1]);
     }
+    // d96a38c3 removed this earlier experiment from the production v1. Do not
+    // mistake v2's retained 90-second retry for part of that production baseline.
+    assert.equal(/^const APP_START_TIMEOUT_MS = /m.test(v1), false);
+    assert.match(v2, /^const APP_START_TIMEOUT_MS = 90 \* 1000;/m);
     assert.equal(v2.includes('process.once('), false);
     assert.equal(v2.includes('maxPayload:'), false);
 });

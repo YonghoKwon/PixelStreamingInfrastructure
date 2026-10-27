@@ -202,15 +202,17 @@ test('existing mDNS rewriting and BrowserSendOffer behavior are unchanged', () =
     assert.match(streamer.sent.find(message => message.type === 'iceCandidate').candidate.candidate, /127\.0\.0\.1 50123/);
 });
 
-test('v2 protocol forwarding and established timing constants remain unchanged', () => {
+test('production v1 forwarding and shared timings remain; v3 startup retry is explicit', () => {
     const read=file=>fs.readFileSync(path.resolve(__dirname,'..',file),'utf8').replace(/\r\n/g,'\n');
-    const baseline=read('cirrus_v2_codex.js'), current=read('cirrus_v3_codex.js');
+    const baseline=read('cirrus_v1.js'), current=read('cirrus_v3_codex.js');
     const section=source=>source.slice(source.indexOf('function forwardPlayerMessage('),source.indexOf('function onPlayerDisconnected('));
     assert.equal(section(current),section(baseline));
-    for(const name of ['OFFER_WAIT_TIMEOUT_MS','STREAMER_PING_TIMEOUT_MS','APP_IDLE_TIMEOUT_MS','APP_START_TIMEOUT_MS','STOP_RETRY_INTERVAL_MS','STOP_RETRY_MAX']){
+    for(const name of ['OFFER_WAIT_TIMEOUT_MS','STREAMER_PING_TIMEOUT_MS','APP_IDLE_TIMEOUT_MS','STOP_RETRY_INTERVAL_MS','STOP_RETRY_MAX']){
         const expression=new RegExp('^const '+name+' = ([^;]+);','m');
         assert.equal(current.match(expression)[1],baseline.match(expression)[1]);
     }
+    assert.equal(/^const APP_START_TIMEOUT_MS = /m.test(baseline), false);
+    assert.match(current, /^const APP_START_TIMEOUT_MS = 90 \* 1000;/m);
 });
 
 test('START cancels an old missing-streamer timer before the script exits', () => {

@@ -56,15 +56,42 @@ Linux 명령은 기존처럼 `/dt/run.sh restart`와 `/dt/run.sh stop`이다. Wi
 
 차단 시 `/healthz`의 `launcher.blockedReason`과 로그를 확인한다. 운영자가 해당 인스턴스의 런처/PID를 확인해 안전하게 정리하고 런처 계약을 바로잡은 뒤 시그널링을 재기동한다. 인증 없는 원격 reset/kill API는 제공하지 않는다. 스크립트가 별도 세션으로 탈출시킨 자식은 그 스크립트의 PID 관리 계약으로 처리해야 한다.
 
-기존 유휴 10분, offer 20초, UE 등록 감시 90초, ping 제한 60초, watchdog 주기 30초, STOP 재시도 15초/4회는 유지한다. 새 제한은 이들 타이머와 별개인 **런처 명령 완료**에 대한 제한이다.
+유휴 10분, offer 20초, ping 제한 60초, watchdog 주기 30초, STOP 재시도 15초/4회는 유지한다. v3의 UE 등록 감시 90초는 **접속 대기 브라우저가 있을 때만** 사용한다. 새 런처 제한은 이들 타이머와 별개인 **런처 명령 완료**에 대한 제한이다.
+
+## 실사용 v1 기준과 유휴 동작
+
+비교 기준은 `d96a38c3984f9b7879daf49d57ae58aac956f1d8`의 `cirrus_v1.js`다.
+이 커밋은 이전 시도의 90초 등록 재시도와 스트리머 종료 5초 뒤 자동 재시도를 제거했다.
+원본 `cirrus.js`, 실사용 `cirrus_v1.js`, 이전 `cirrus_v2_codex.js`는 이번 수정에서 변경하지 않는다.
+
+| 항목 | v3에서 선택한 동작과 이유 |
+| --- | --- |
+| 브라우저 접속 | 해당 3D를 시작하고, 이미 연결된 UE는 재사용한다. |
+| 마지막 브라우저 종료 | 그 시점부터 10분을 센다. 재접속하면 취소하고, 다시 마지막 브라우저가 나가면 새 10분을 센다. |
+| 유휴 중 ping 누락·UE 소켓 단절 | 상태를 계속 기록하지만 START/restart를 하지 않는다. SFU와 CLOSING 상태 브라우저도 복구 수요가 아니다. |
+| 유휴 만료 | 기동을 요청했거나 UE 등록을 관측했다면 STOP을 요청한다. 중간 소켓 단절이나 기동 오류만으로 OS 프로세스 종료를 단정해 STOP을 생략하지 않는다. 실행 중 명령과의 직렬화·차단 상태의 운영자 복구 정책은 유지한다. |
+| 접속자가 있는 동안의 장애 | ping이 60초 넘게 없으면 복구한다. 첫 ping이 아예 없는 경우에도 UE 등록 시각부터 계산한다. |
+| 과거 90초·5초 복구 시도 | v1에서 제거된 사실을 기준으로 재검토했다. 기동 실패/UE 미등록 또는 연결 소실 후 대기 브라우저가 영구 대기하는 경우를 복구하기 위해 v3에서는 열린 브라우저가 있을 때만 유지한다. 실제 운영의 기동 시간과 정책 수용은 별도 확인한다. |
+| 명령 중복·SFU·재구독 방어 | START/STOP 중첩, SFU만으로 기동/유휴 취소, 같은 스트리머 재구독에 의한 연결 해제를 방지하는 기존 v3 검사를 유지한다. 유휴 상태의 재시작을 정당화하는 용도로 사용하지 않는다. |
+
+30초 HEARTBEAT 로그와 `/healthz`·`/readyz`의 `streamerHealth`가
+`awaiting-ping`, `healthy`, `stale`, `disconnected` 및 마지막 관측 경과 시간 `ageMs`를 제공한다.
+등록 기준 readiness와 ping 상태는 별도이며, 어느 것도 OS PID 생존이나 실제 영상 품질을 증명하지 않는다.
+유휴 중 ping이나 상태 조회는 10분 종료 시각을 연장하지 않는다.
 
 ## 검증
 
 ```sh
 node --check cirrus_v3_codex.js
-node --test tests/cirrus_v2_codex.test.js tests/cirrus_v3_codex.test.js tests/cirrus_v3_support.test.js tests/cirrus_v3_operations.test.js tests/cirrus_v3_runner.integration.test.js tests/cirrus_v3_http.integration.test.js
+node --test tests/cirrus_v2_codex.test.js tests/cirrus_v3_codex.test.js tests/cirrus_v3_idle.test.js tests/cirrus_v3_support.test.js tests/cirrus_v3_operations.test.js tests/cirrus_v3_runner.integration.test.js tests/cirrus_v3_http.integration.test.js
 ```
 
 호환성 가상 시계 검사는 v2 동작을 독립적으로 확인하기 위해 신규 런처 제한 시간을 늘려 사용한다. 신규 deadline 검사는 기본/짧은 설정으로 별도 실행한다. HTTP 통합 검사는 임시 파일·동적 포트·합성 스트리머를 사용하며 실제 3D 런처를 호출하지 않는다. 실제 프로세스 그룹 종료 검사는 Linux에서만 실행한다.
+
+`cirrus_v3_idle.test.js`는 실제 10분 대기 대신 가상 시계로 599,999ms/600,000ms 경계,
+재접속, ping 누락, 소켓 단절, SFU, 명령 완료 지연을 검사한다.
+`CIRRUS_REALTIME_IDLE_SMOKE=1`로 HTTP 통합 검사를 실행하면 실제 WebSocket 연결/종료 후
+95초 동안 ping을 멈추고 재시작 없이 stale 관측이 유지되는지도 확인한다.
+이 선택 검사는 기본 실행에서는 건너뛰며, 실제 UE 프로세스나 회사 서버의 10분 종료 수용 검사를 대신하지 않는다.
 
 이 변경은 WSL/Dozen 렌더링 속도나 CPU 경유 전송 비용을 개선하는 변경이 아니다. 로컬 H264 성공을 native RHEL8, 공인 전체 인증서 체인, 실제 SFU 영상 분배, 회사/실센서·오디오·성능 수용으로 확대하지 않는다.

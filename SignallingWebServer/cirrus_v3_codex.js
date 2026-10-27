@@ -100,17 +100,21 @@ function clearOfferWaitTimer(playerId) {
 
 // 상단 변수 선언부에 추가
 let lastStreamerPingTime = null;
+let lastStreamerRegistrationTime = null;
 let streamerWatchdogTimer = null;
-const STREAMER_PING_TIMEOUT_MS = 1 * 60 * 1000;  // 1분 동안 ping 없으면 재시작
+const STREAMER_PING_TIMEOUT_MS = 1 * 60 * 1000;  // 1분 stale; 열린 브라우저가 있을 때만 복구
 
 function startStreamerWatchdog() {
 	if (streamerWatchdogTimer) clearInterval(streamerWatchdogTimer);
 	streamerWatchdogTimer = setInterval(() => {
 		if (zombieRestartInProgress || appCommandInProgress || appCommandRunner.isBlocked()) return;
+		// Idle grace is observation-only. A UE/SFU socket is not browser demand.
+		// The independent ten-minute timer remains responsible for shutdown.
+		if (!hasBrowserDemand()) return;
 		
 		// [신규] 앱 시작 후 APP_START_TIMEOUT_MS 내 스트리머 미연결 감지
 		// Watch_Streamers 등이 프로세스를 죽였거나 앱 내부 오류로 연결 못 한 경우 재시작
-		if ((appRunning || browserPlayerCount() > 0) && appStreamerCount() === 0 && appStartTime) {
+		if (appStreamerCount() === 0 && appStartTime) {
 			const elapsed = Date.now() - appStartTime;
 			if (elapsed > APP_START_TIMEOUT_MS) {
 				console.logColor(logging.Red,
@@ -118,21 +122,15 @@ function startStreamerWatchdog() {
 				);
 				appRunning = false;
 				appStartTime = null;
-				if (browserPlayerCount() > 0) {
-					console.logColor(logging.Yellow, `[WATCHDOG] 대기 플레이어 ${players.size}명 → startApp 재호출`);
-					startApp();
-				} else {
-					// 대기 플레이어 없으면 워치독 중단 (다음 접속 시 재시작됨)
-					stopStreamerWatchdog();
-				}
+				console.logColor(logging.Yellow, `[WATCHDOG] 대기 브라우저 → startApp 재호출`);
+				startApp();
 				return;
 			}
 		}
 		
-		if (appStreamerCount() === 0) return;  // SFU is not the managed UE app.
-		if (!lastStreamerPingTime) return;
-		const elapsed = Date.now() - lastStreamerPingTime;
-		if (elapsed > STREAMER_PING_TIMEOUT_MS) {
+		const health = getStreamerHealth();
+		if (health.state === 'stale') {
+			const elapsed = health.ageMs;
 			console.logColor(logging.Red, `[WATCHDOG] 스트리머 ping 없음 (${Math.floor(elapsed/1000)}초) → 3D 앱 재시작`);
 			appRunning = false;
 			runAppCommand(START_CMD, (err) => {
@@ -387,6 +385,9 @@ console.logColor(logging.Green, `[APP] OS: ${process.platform} | Port: ${myStrea
 let idleTimer = null;
 let idleTimerStartTime = null;  // 추가 - 유휴 타이머 시작 시각
 let appRunning = false;
+// Signalling loss does not prove the launched OS process exited. Retain cleanup
+// responsibility until STOP is requested, even if appRunning is resynchronized.
+let appStopPending = false;
 let appStartTime = null;  // 추가 - startApp() 호출 시각 (스트리머 미연결 타임아웃 감지용)
 
 // 앱 시작 후 이 시간 내 스트리머가 연결 안 되면 재시작 시도
@@ -417,15 +418,28 @@ function browserPlayerCount() {
 	return [...players.values()].filter(player => !player.isSFU()).length;
 }
 
+function hasBrowserDemand() {
+	return [...players.values()].some(player => !player.isSFU() && player.ws.readyState === WebSocket.OPEN);
+}
+
 function appStreamerCount(openOnly = false) {
 	return [...streamers.values()].filter(streamer => !streamer.isSFU() &&
 		(!openOnly || streamer.ws.readyState === WebSocket.OPEN)).length;
+}
+
+function getStreamerHealth() {
+	if (appStreamerCount(true) === 0) return { state: 'disconnected', ageMs: null };
+	const observedAt = lastStreamerPingTime ?? lastStreamerRegistrationTime;
+	const ageMs = observedAt === null ? null : Math.max(0, Date.now() - observedAt);
+	return { state: ageMs !== null && ageMs > STREAMER_PING_TIMEOUT_MS ? 'stale' :
+		lastStreamerPingTime === null ? 'awaiting-ping' : 'healthy', ageMs };
 }
 
 function runAppCommand(command, callback) {
 	if (appCommandInProgress || appCommandRunner.isBlocked()) return false;
 	appCommandInProgress = command;
 	if (command === START_CMD) {
+		appStopPending = true;
 		appStartTime = Date.now(); // All three START paths retain the same registration deadline.
 		if (streamerGoneTimerId) { clearTimeout(streamerGoneTimerId); streamerGoneTimerId = null; }
 		startStreamerWatchdog();
@@ -448,7 +462,7 @@ function runAppCommand(command, callback) {
 			}
 		}
 		if (!appCommandInProgress) {
-			if (resumeStart && browserPlayerCount() > 0) startApp(true);
+			if (resumeStart && hasBrowserDemand()) startApp(true);
 			else if (resumeStop && browserPlayerCount() === 0) stopApp(true);
 		}
 	};
@@ -465,7 +479,7 @@ function forceCloseAllStreamers(reason) {
 }
 
 function startApp(forceStart = false) {
-	if (appCommandRunner.isBlocked()) return;
+	if (!hasBrowserDemand() || appCommandRunner.isBlocked()) return;
 	// 진행 중인 stop 재시도 타이머가 있으면 취소 (새로 시작하는 경우)
 	if (stopRetryTimer) {
 		clearInterval(stopRetryTimer);
@@ -526,7 +540,7 @@ function stopApp(forceStop = false) {
 		if (appCommandInProgress === START_CMD) stopAfterStart = true;
 		return;
 	}
-	if (!appRunning && !forceStop) return;
+	if (!appRunning && !appStopPending && !forceStop) return;
 	console.logColor(logging.Orange, `[APP] 유휴 ${APP_IDLE_TIMEOUT_MS / 60000}분 경과 → 3D 앱 종료`);
 	
 	// STOP_CMD 실행 (BAT/sh)
@@ -539,6 +553,7 @@ function stopApp(forceStop = false) {
 	forceCloseAllStreamers('idle shutdown');
 	
 	appRunning = false;
+	appStopPending = false;
 	appStartTime = null;  // 추가
 	stopStreamerWatchdog();
 	lastStreamerPingTime = null;
@@ -616,6 +631,7 @@ function getServiceStatus() {
 	const ready = appStreamerCount(true) > 0 && !appCommandInProgress && launcher.state !== 'blocked';
 	return { status: launcher.state === 'blocked' ? 'degraded' : ready ? 'ready' : 'waiting', ready,
 		browsers: browserPlayerCount(), ueStreamers: appStreamerCount(true), launcher,
+		streamerHealth: getStreamerHealth(),
 		mediaValidated: false };
 }
 app.get('/healthz', (req, res) => res.set('Cache-Control', 'no-store').status(200).json(getServiceStatus()));
@@ -1093,6 +1109,8 @@ function registerStreamer(id, streamer) {
 	streamers.set(id, streamer);
 	if (!streamer.isSFU()) {
 		if (appCommandInProgress !== STOP_CMD) appRunning = true;
+		appStopPending = true;
+		lastStreamerRegistrationTime = Date.now();
 		lastStreamerPingTime = null; // Do not inherit the replaced connection's ping timestamp.
 		startStreamerWatchdog();
 	}
@@ -1181,7 +1199,7 @@ function onStreamerDisconnected(streamer) {
 				// 시나리오: Watch_Streamers가 프로세스 종료 → 5초 내 플레이어 재접속 →
 				// startApp()이 appRunning=true 로 스킵됨 → 5초 후 appRunning=false 전환 →
 				// 하지만 아무도 startApp() 재호출 안 함 → 앱 영구 미기동 버그 수정
-				if (browserPlayerCount() > 0) {
+				if (hasBrowserDemand()) {
 					console.logColor(logging.Yellow,
 						`[APP] 스트리머 종료 후 대기 플레이어 ${players.size}명 감지 → 자동 재시작`
 					);
@@ -1969,7 +1987,7 @@ setInterval(() => {
 	}
 	
 	console.logColor(logging.Cyan,
-		`[${new Date().toISOString()}] HEARTBEAT | Streamers: ${streamers.size} | Players: ${players.size} | Browsers: ${browserPlayerCount()} | Uptime: ${uptimeStr} | 유휴: ${idleStr}`
+		`[${new Date().toISOString()}] HEARTBEAT | Streamers: ${streamers.size} | Players: ${players.size} | Browsers: ${browserPlayerCount()} | UE ping: ${getStreamerHealth().state} | Uptime: ${uptimeStr} | 유휴: ${idleStr}`
 	);
 	if (streamers.size > 0) {
 		for (let [id, streamer] of streamers) {
