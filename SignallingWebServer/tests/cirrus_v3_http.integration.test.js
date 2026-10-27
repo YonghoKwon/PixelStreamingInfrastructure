@@ -67,3 +67,29 @@ test('real endpoint receives original ICE credentials but console and file logs 
         for (const file of files) assert.equal(fs.readFileSync(path.join(s.dir, 'logs', file), 'utf8').includes(secret), false);
     } finally { await close(s); }
 });
+
+test('real sockets stay idle for 95 seconds without a ping-triggered restart', {
+    skip: process.env.CIRRUS_REALTIME_IDLE_SMOKE !== '1'
+}, async () => {
+    const s = await start();
+    try {
+        const st = await socket(s, s.config.StreamerPort);
+        await until(() => st.rows.some(m => m.type === 'identify'));
+        st.send(JSON.stringify({type:'endpointId',id:'QA-IDLE-ONLY'}));
+        st.send(JSON.stringify({type:'ping',time:1}));
+        await until(() => st.rows.some(m => m.type === 'pong'));
+        const p = await socket(s, s.config.HttpPort);
+        await until(() => p.rows.some(m => m.type === 'config'));
+        const departed = new Promise(resolve => p.once('close', resolve)); p.close(); await departed;
+        await pause(95000);
+        const health = JSON.parse((await get(s, '/healthz')).body);
+        assert.equal(health.browsers, 0);
+        assert.equal(health.ueStreamers, 1);
+        assert.equal(health.streamerHealth.state, 'stale');
+        assert.equal(health.launcher.state, 'idle');
+        assert.equal(st.readyState, WS.OPEN);
+        assert.equal(s.logs.includes('3D 앱 재시작'), false);
+        assert.equal(s.logs.includes('3D 앱 시작 요청'), false);
+        assert.equal(s.logs.includes('UE ping: stale'), true);
+    } finally { await close(s); }
+});
