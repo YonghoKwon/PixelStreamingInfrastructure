@@ -93,3 +93,26 @@ test('real sockets stay idle for 95 seconds without a ping-triggered restart', {
         assert.equal(s.logs.includes('UE ping: stale'), true);
     } finally { await close(s); }
 });
+
+test('real connected browser and UE sockets survive 95 seconds without JSON keepalives', {
+    skip: process.env.CIRRUS_REALTIME_PING_SMOKE !== '1'
+}, async () => {
+    const s = await start();
+    try {
+        const st = await socket(s, s.config.StreamerPort);
+        await until(() => st.rows.some(m => m.type === 'identify'));
+        st.send(JSON.stringify({type:'endpointId',id:'QA-CONNECTED-ONLY'}));
+        st.send(JSON.stringify({type:'ping',time:1}));
+        await until(() => st.rows.some(m => m.type === 'pong'));
+        const p = await socket(s, s.config.HttpPort);
+        await until(() => p.rows.some(m => m.type === 'config'));
+        await pause(95000);
+        const health = JSON.parse((await get(s, '/healthz')).body);
+        assert.equal(health.browsers, 1); assert.equal(health.ueStreamers, 1);
+        assert.equal(health.streamerHealth.state, 'stale');
+        assert.equal(health.launcher.state, 'idle');
+        assert.equal(p.readyState, WS.OPEN); assert.equal(st.readyState, WS.OPEN);
+        assert.equal(s.logs.includes('3D 앱 재시작'), false);
+        assert.equal(s.logs.includes('3D 앱 시작 요청'), false);
+    } finally { await close(s); }
+});

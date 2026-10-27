@@ -53,11 +53,11 @@ test('a closing old browser cannot restart its replacement streamer', () => {
     assert.equal(h.run('offerWaitTimers.size'), 0);
 });
 
-test('ping watchdog commands do not overlap when the launcher is still running', () => {
+test('late JSON pings cannot request a launcher command while the browser remains connected', () => {
     const h = createHarness(); const streamer = h.streamer(); h.player();
     streamer.message({ type: 'ping', time: 1 }); h.advance(90000);
-    assert.equal(h.commands.length, 1);
-    h.advance(90000); assert.equal(h.commands.length, 1);
+    assert.equal(h.commands.length, 0);
+    h.advance(90000); assert.equal(h.commands.length, 0);
 });
 
 test('offer timeout defers while an existing START command is running', () => {

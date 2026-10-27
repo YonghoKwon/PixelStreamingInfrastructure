@@ -53,12 +53,12 @@ test('return within grace cancels old STOP and the next departure gets a new ten
     assert.equal(stops(h).length, 0); h.advance(1); assert.equal(stops(h).length, 1);
 });
 
-test('one remaining browser keeps recovery active; only the last departure starts grace', () => {
+test('one remaining browser prevents shutdown even when JSON pings are missing', () => {
     const h = createHarness(); const ue = h.streamer(); const a = h.player(); const b = h.player();
     ue.message({type:'ping',time:1}); a.finishClose(); h.advance(90000);
-    assert.equal(starts(h).length, 1); assert.equal(h.run('idleTimerStartTime'), null);
-    h.complete(); ue.message({type:'ping',time:2}); b.finishClose(); h.advance(600000);
-    assert.equal(starts(h).length, 1); assert.equal(stops(h).length, 1);
+    assert.equal(starts(h).length, 0); assert.equal(h.run('idleTimerStartTime'), null);
+    ue.message({type:'ping',time:2}); b.finishClose(); h.advance(600000);
+    assert.equal(starts(h).length, 0); assert.equal(stops(h).length, 1);
 });
 
 test('SFU-only connections never demand idle recovery', () => {
@@ -67,9 +67,10 @@ test('SFU-only connections never demand idle recovery', () => {
     assert.equal(starts(h).length, 0); assert.equal(stops(h).length, 1); assert.equal(sfu.readyState, 1);
 });
 
-test('active browser with a silent registered UE still triggers ping recovery', () => {
-    const h = createHarness(); h.streamer(); h.player(); h.advance(90000);
-    assert.equal(starts(h).length, 1);
+test('active browser with no first JSON ping stays connected without a restart', () => {
+    const h = createHarness(); const ue = h.streamer(); const browser = h.player(); h.advance(1800000);
+    assert.equal(starts(h).length, 0); assert.equal(stops(h).length, 0);
+    assert.equal(ue.readyState, 1); assert.equal(browser.readyState, 1);
 });
 
 test('idle monitoring reports fresh pings without resetting the shutdown deadline', () => {
@@ -85,22 +86,40 @@ test('an unused server does not issue a spurious STOP after ten minutes', () => 
     const h = createHarness(); h.advance(600000); assert.equal(h.commands.length, 0);
 });
 
-test('return to a silent idle UE enables recovery only after browser demand resumes', () => {
+test('return to a silent idle UE reuses it without restarting for stale JSON pings', () => {
     const h = createHarness(); const ue = h.streamer(); const first = h.player();
     ue.message({type:'ping',time:1}); first.finishClose(); h.advance(300000);
     assert.equal(starts(h).length, 0);
-    h.player(); h.advance(30000); assert.equal(starts(h).length, 1);
+    h.player(); h.advance(30000); assert.equal(starts(h).length, 0);
     assert.equal(h.run('idleTimerStartTime'), null);
 });
 
 test('completion of an already-requested recovery cannot extend idle grace', () => {
     const h = createHarness(); const ue = h.streamer(); const browser = h.player();
-    ue.message({type:'ping',time:1}); h.advance(90000); assert.equal(starts(h).length, 1);
+    browser.message({type:'subscribe',streamerId:'A'});
+    h.advance(20000); assert.equal(starts(h).length, 1); // Actual offer negotiation timeout, not ping age.
     browser.finishClose(); const deadline = h.run('idleTimerStartTime + APP_IDLE_TIMEOUT_MS');
     h.advance(30000); h.complete(); h.advance(569999);
     assert.equal(starts(h).length, 1); assert.equal(stops(h).length, 0);
     assert.equal(h.run('idleTimerStartTime + APP_IDLE_TIMEOUT_MS'), deadline);
     h.advance(1); assert.equal(stops(h).length, 1);
+});
+
+test('normal sixty-second keepalives with scheduler jitter never restart 3D', () => {
+    const h = createHarness(); const ue = h.streamer(); const browser = h.player();
+    for (let i=0;i<10;i++) { h.advance(61000); ue.message({type:'ping',time:i}); }
+    assert.equal(h.commands.length, 0); assert.equal(ue.readyState, 1); assert.equal(browser.readyState, 1);
+});
+
+test('established offer/answer signalling survives missing JSON pings then stops at idle expiry', () => {
+    const h = createHarness(); const ue = h.streamer(); const browser = h.player();
+    const id = h.playerId(browser); browser.message({type:'subscribe',streamerId:'A'});
+    ue.message({type:'offer',playerId:id,sdp:'v=0\r\n'});
+    browser.message({type:'answer',sdp:'v=0\r\n'});
+    h.advance(600000); assert.equal(h.commands.length, 0);
+    assert.equal(browser.readyState, 1); assert.equal(ue.readyState, 1);
+    browser.finishClose(); h.advance(599999); assert.equal(stops(h).length, 0);
+    h.advance(1); assert.equal(stops(h).length, 1); assert.equal(starts(h).length, 0);
 });
 
 test('departing browser cancels pending offer recovery without cancelling eventual cleanup', () => {
