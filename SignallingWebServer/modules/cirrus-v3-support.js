@@ -2,6 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { format } = require('node:util');
 const { spawn } = require('node:child_process');
 
 const secretKey = /password|passphrase|credential|secret|token|authorization|api[-_]?key|private[-_]?key/i;
@@ -105,6 +106,33 @@ function closeReason(value) {
     return result;
 }
 
+// The shared logger keeps its stream private. Own a v3 error/warn file instead
+// of modifying that module or duplicating these messages on stdout.
+function installErrorFileLogger(target, options = {}) {
+    const fileSystem = options.fileSystem || fs;
+    const directory = options.directory || './logs/';
+    const now = options.now || (() => new Date());
+    const redact = options.redact || (value => value);
+    const date = now();
+    const pad = (value, width = 2) => String(value).padStart(width, '0');
+    const name = `${date.getFullYear()}.${pad(date.getMonth())}.${pad(date.getDate())}.${pad(date.getHours())}.${pad(date.getMinutes())}.${pad(date.getSeconds())}.error.log`;
+    fileSystem.mkdirSync(directory, { recursive: true });
+    const output = fileSystem.createWriteStream(path.join(directory, name), { flags: 'a' });
+    const originals = {};
+    for (const method of ['error', 'warn']) {
+        originals[method] = target[method].bind(target);
+        target[method] = (...args) => {
+            const time = now();
+            const prefix = `${pad(time.getHours())}:${pad(time.getMinutes())}:${pad(time.getSeconds())}.${pad(time.getMilliseconds(), 3)}`;
+            const line = `${prefix} ${format(...args.map(value => redact(value)))}`;
+            originals[method](line);
+            output.write(line + '\n');
+        };
+    }
+    output.on('error', () => originals.error('Cirrus v3 error log write failed (details omitted).'));
+    return output;
+}
+
 // Owns only the processes it spawns. No global process-name or UE PID searches.
 function createCommandRunner(options = {}) {
     const launch = options.spawn || spawn;
@@ -202,4 +230,4 @@ function createCommandRunner(options = {}) {
     return { run, snapshot, isBlocked: () => !!blocked, noteRegistered: () => { if (!blocked) timeouts = 0; } };
 }
 
-module.exports = { createLogRedactor, loadConfig, certificatePath, closeReason, createCommandRunner };
+module.exports = { createLogRedactor, loadConfig, certificatePath, closeReason, installErrorFileLogger, createCommandRunner };

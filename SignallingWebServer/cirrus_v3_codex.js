@@ -178,6 +178,7 @@ logRedactor.remember(config);
 
 if (config.LogToFile) {
 	logging.RegisterFileLogger('./logs/');
+	v3.installErrorFileLogger(console, { fileSystem: fs, redact: logRedactor.redact });
 }
 
 console.log("Config: " + JSON.stringify(logRedactor.redact(config), null, '\t'));

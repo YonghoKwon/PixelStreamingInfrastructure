@@ -78,6 +78,8 @@ function createHarness(overrides = {}, options = {}) {
         exit(code) { this.exitCode = code; this.exited = true; } });
     const fakeFs = {
         existsSync() { return true; },
+        mkdirSync() {},
+        createWriteStream() { return Object.assign(new EventEmitter(), { write() {} }); },
         readFileSync(file, encoding) {
             let content;
             if (String(file).endsWith('.json')) content = JSON.stringify({ AppCommandTimeoutMs: 900000, ...overrides });
