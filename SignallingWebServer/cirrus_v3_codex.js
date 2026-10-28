@@ -385,6 +385,11 @@ let streamerGoneTimerId = null;
 let stopRetryTimer = null;
 const STOP_RETRY_INTERVAL_MS = 15 * 1000;  // 15초마다 재시도
 const STOP_RETRY_MAX = 4;  // 최대 4회 재시도 (명령 실행 중인 회차는 건너뜀)
+let stopRetryStatus = { state: 'idle', attempts: 0, at: null };
+
+function resetStopRetryStatus() {
+	stopRetryStatus = { state: 'idle', attempts: 0, at: null };
+}
 
 // Keep the v1 booleans and scripts. This gate tracks only the current shell command.
 let appCommandInProgress = null;
@@ -563,6 +568,7 @@ function stopApp(forceStop = false) {
 		retryCount++;
 		if (appStreamerCount() === 0) {
 			console.logColor(logging.Green, `[APP] 스트리머 완전 종료 확인 (재시도 ${retryCount}회)`);
+			resetStopRetryStatus();
 			clearInterval(stopRetryTimer);
 			stopRetryTimer = null;
 			return;
@@ -575,6 +581,7 @@ function stopApp(forceStop = false) {
 		forceCloseAllStreamers('idle shutdown retry ' + retryCount);
 		
 		if (retryCount >= STOP_RETRY_MAX) {
+			stopRetryStatus = { state: 'exhausted', attempts: retryCount, at: new Date().toISOString() };
 			console.logColor(logging.Red, `[APP] 최대 재시도 초과 → 재시도 중단`);
 			clearInterval(stopRetryTimer);
 			stopRetryTimer = null;
@@ -617,6 +624,7 @@ function getServiceStatus() {
 	const ready = appStreamerCount(true) > 0 && !appCommandInProgress && launcher.state !== 'blocked';
 	return { status: launcher.state === 'blocked' ? 'degraded' : ready ? 'ready' : 'waiting', ready,
 		browsers: browserPlayerCount(), ueStreamers: appStreamerCount(true), launcher,
+		stopRetry: { ...stopRetryStatus },
 		streamerHealth: getStreamerHealth(),
 		mediaValidated: false };
 }
@@ -1170,6 +1178,7 @@ function onStreamerDisconnected(streamer) {
 	}
 	disconnectAllPlayers(streamer.id);
 	streamers.delete(streamer.id);
+	if (appStreamerCount() === 0) resetStopRetryStatus();
 	
 	// 스트리머가 끊기면 appRunning 상태 재동기화
 	if (appStreamerCount() === 0) {
@@ -1596,6 +1605,7 @@ playerServer.on('connection', function (ws, req) {
 	players.set(playerId, player);
 
 	// 추가 - 플레이어 접속 시 3D 앱 실행
+	resetStopRetryStatus();
 	resetIdleTimer();
 	startApp();
 	
@@ -1975,6 +1985,9 @@ setInterval(() => {
 	console.logColor(logging.Cyan,
 		`[${new Date().toISOString()}] HEARTBEAT | Streamers: ${streamers.size} | Players: ${players.size} | Browsers: ${browserPlayerCount()} | UE ping: ${getStreamerHealth().state} | Uptime: ${uptimeStr} | 유휴: ${idleStr}`
 	);
+	if (stopRetryStatus.state === 'exhausted') {
+		console.warn(`[HEARTBEAT] STOP retries exhausted (${stopRetryStatus.attempts}); operator inspection required`);
+	}
 	if (streamers.size > 0) {
 		for (let [id, streamer] of streamers) {
 			console.logColor(logging.Cyan, `- Streamer: ${id} | wsState: ${streamer.ws.readyState} (1=OPEN, 3=CLOSED)`);
