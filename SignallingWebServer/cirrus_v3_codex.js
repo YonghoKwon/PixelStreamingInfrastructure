@@ -186,7 +186,8 @@ const defaultConfig = {
 	AppCommandMaxTimeouts: 3,
 	MaxWebSocketPayloadBytes: 4 * 1024 * 1024,
 	AppStartMaxAttempts: 3,
-	PlayerKeepaliveTimeoutMs: 30000
+	PlayerKeepaliveTimeoutMs: 30000,
+	AppStartCooldownMs: 600000
 };
 
 const argv = require('yargs').argv;
@@ -410,24 +411,47 @@ function resetStopRetryStatus() {
 	stopRetryStatus = { state: 'idle', attempts: 0, at: null };
 }
 
-let startRetryStatus = { state: 'idle', attempts: 0, at: null };
+let startRetryTimer = null;
+let startRetryStatus = { state: 'idle', attempts: 0, at: null, nextRetryAt: null, slowRetries: 0 };
 
 function resetStartRetryStatus() {
-	startRetryStatus = { state: 'idle', attempts: 0, at: null };
+	if (startRetryTimer) { clearTimeout(startRetryTimer); startRetryTimer = null; }
+	startRetryStatus = { state: 'idle', attempts: 0, at: null, nextRetryAt: null, slowRetries: 0 };
 }
 
 function canStartApp() {
 	return startRetryStatus.attempts < config.AppStartMaxAttempts;
 }
 
-function countStartAttempt() {
+function scheduleSlowStartRetry() {
+	if (startRetryTimer || startRetryStatus.state !== 'exhausted' || config.AppStartCooldownMs === 0) return;
+	startRetryStatus.nextRetryAt = new Date(Date.now() + config.AppStartCooldownMs).toISOString();
+	startRetryTimer = setTimeout(() => {
+		startRetryTimer = null;
+		startRetryStatus.nextRetryAt = null;
+		if (startRetryStatus.state !== 'exhausted') return;
+		// A busy/blocked/no-demand round is skipped, never queued for an early retry.
+		scheduleSlowStartRetry();
+		if (!hasBrowserDemand() || appCommandInProgress || appCommandRunner.isBlocked() || zombieRestartInProgress) return;
+		console.warn('[APP] START cooldown elapsed; one slow retry');
+		appRunning = true;
+		runAppCommand(START_CMD, error => {
+			if (error) { appRunning = appStreamerCount(true) > 0; console.error(`[APP] Slow START failed: ${error.message}`); }
+		}, true);
+	}, config.AppStartCooldownMs);
+	startRetryTimer.unref?.();
+}
+
+function countStartAttempt(slowRetry = false) {
 	startRetryStatus.attempts++;
+	if (slowRetry) startRetryStatus.slowRetries++;
 	if (canStartApp()) {
 		startRetryStatus.state = 'attempting';
 	} else if (startRetryStatus.state !== 'exhausted') {
 		startRetryStatus.state = 'exhausted';
 		startRetryStatus.at = new Date().toISOString();
 		console.warn(`[APP] START budget exhausted (${startRetryStatus.attempts}/${config.AppStartMaxAttempts}); further automatic START disabled until negotiation succeeds or idle expires`);
+		scheduleSlowStartRetry();
 	}
 }
 
@@ -466,12 +490,12 @@ function getStreamerHealth() {
 		lastStreamerPingTime === null ? 'awaiting-ping' : 'healthy', ageMs };
 }
 
-function runAppCommand(command, callback) {
+function runAppCommand(command, callback, slowRetry = false) {
 	if (appCommandInProgress || appCommandRunner.isBlocked()) return false;
-	if (command === START_CMD && !canStartApp()) return false;
+	if (command === START_CMD && !canStartApp() && !slowRetry) return false;
 	appCommandInProgress = command;
 	if (command === START_CMD) {
-		countStartAttempt();
+		countStartAttempt(slowRetry);
 		appStopPending = true;
 		appStartTime = Date.now(); // All three START paths retain the same registration deadline.
 		if (streamerGoneTimerId) { clearTimeout(streamerGoneTimerId); streamerGoneTimerId = null; }
@@ -2081,7 +2105,7 @@ setInterval(() => {
 		console.warn(`[HEARTBEAT] STOP retries exhausted (${stopRetryStatus.attempts}); operator inspection required`);
 	}
 	if (startRetryStatus.state === 'exhausted') {
-		console.warn(`[HEARTBEAT] START budget exhausted (${startRetryStatus.attempts}); automatic START paused`);
+		console.warn(`[HEARTBEAT] START budget exhausted (${startRetryStatus.attempts}); next slow retry: ${startRetryStatus.nextRetryAt || 'disabled'}`);
 	}
 	if (streamers.size > 0) {
 		for (let [id, streamer] of streamers) {

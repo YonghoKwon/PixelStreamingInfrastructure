@@ -85,7 +85,9 @@ function createHarness(overrides = {}, options = {}) {
         createWriteStream() { return Object.assign(new EventEmitter(), { write() {} }); },
         readFileSync(file, encoding) {
             let content;
-            if (String(file).endsWith('.json')) content = JSON.stringify({ AppCommandTimeoutMs: 900000, ...overrides });
+            // Legacy lifecycle cases isolate the old no-cooldown G policy.
+            // New slow-retry cases opt into the production cooldown explicitly.
+            if (String(file).endsWith('.json')) content = JSON.stringify({ AppCommandTimeoutMs: 900000, AppStartCooldownMs: 0, ...overrides });
             else if (String(file).includes('chain')) content = '-----BEGIN CERTIFICATE-----\nINTERMEDIATE\n-----END CERTIFICATE-----';
             else content = '-----BEGIN CERTIFICATE-----\nLEAF\n-----END CERTIFICATE-----';
             return encoding ? content : Buffer.from(content);
