@@ -38,6 +38,11 @@ function startOfferWaitTimer(playerId, streamerId) {
 			startOfferWaitTimer(playerId, streamerId); // Defer this same check; never overlap a command.
 			return;
 		}
+		if (hasNegotiatedViewer(expectedStreamer, playerId)) {
+			console.warn(`[ZOMBIE] Offer timeout for player ${playerId}; negotiated viewers retained`);
+			player.ws.close(); // Same close code/reason as disconnectAllPlayers.
+			return;
+		}
 		// Check before removing UE/player sockets: an exhausted budget is
 		// observation-only, and closing browsers would trigger reconnect loops.
 		if (!canStartApp()) return;
@@ -99,6 +104,12 @@ function clearOfferWaitTimer(playerId) {
 		clearTimeout(offerWaitTimers.get(playerId));
 		offerWaitTimers.delete(playerId);
 	}
+}
+
+function hasNegotiatedViewer(streamer, exceptId) {
+	return [...players.values()].some(player => player.id !== exceptId && !player.isSFU() &&
+		player.ws.readyState === WebSocket.OPEN && player.streamerId === streamer.id &&
+		player.negotiatedStreamer === streamer && streamers.get(streamer.id) === streamer);
 }
 
 // 상단 변수 선언부에 추가
@@ -926,6 +937,7 @@ class Player {
 	}
 
 	unsubscribe() {
+		delete this.negotiatedStreamer;
 		clearOfferWaitTimer(this.id);
 		if (this.streamerId && streamers.has(this.streamerId)) {
 			if (this.type == PlayerType.SFU) {
@@ -1292,6 +1304,7 @@ function forwardStreamerMessageToPlayer(streamer, msg) {
 			if (!error && players.get(playerId) === player && player.ws.readyState === WebSocket.OPEN &&
 				player.streamerId === streamer.id && streamers.get(streamer.id) === streamer && streamer.ws.readyState === WebSocket.OPEN) {
 				clearOfferWaitTimer(playerId);
+				if (!player.isSFU()) player.negotiatedStreamer = streamer;
 				resetStartRetryStatus();
 			}
 		} : undefined);
@@ -1377,7 +1390,15 @@ function forwardSFUMessageToPlayer(sfuPlayer, msg) {
 	const player = players.get(playerId);
 	if (player && canRouteToPlayer(sfuPlayer.getSFUStreamerComponent(), player)) {
 		logForward(sfuPlayer.getSFUStreamerComponent().id, playerId, msg);
-		player.sendTo(msg);
+		const source = sfuPlayer.getSFUStreamerComponent();
+		player.sendTo(msg, error => {
+			if (!error && msg.type === 'offer' && !player.isSFU() && player.whoSendsOffer === WhoSendsOffer.Streamer &&
+				players.get(playerId) === player && player.ws.readyState === WebSocket.OPEN &&
+				player.streamerId === source.id && streamers.get(source.id) === source && source.ws.readyState === WebSocket.OPEN) {
+				player.negotiatedStreamer = source;
+				clearOfferWaitTimer(playerId);
+			}
+		});
 	}
 }
 
