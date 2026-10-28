@@ -86,8 +86,6 @@ UE 5.3의 `PixelStreamingSignallingConnection.h`에서 `KEEP_ALIVE_INTERVAL` 기
 기동 명령이 반환됐다는 이유로 실제 ping 수신 시각을 갱신하지 않는다.
 수정 파일을 배치한 뒤 실행 중인 시그널링 서비스를 재기동해야 새 동작이 적용된다.
 
-## 검증
-
 ## 런타임 의존성 감사 (A)
 
 Node 24.22.1/npm 11.19.1로 런타임 패키지를 기존 메이저 범위 안에서 갱신했다.
@@ -96,6 +94,45 @@ Node 24.22.1/npm 11.19.1로 런타임 패키지를 기존 메이저 범위 안�
 (변경 전 critical 1, high 4, moderate 1, low 5). Express 4, ws 7, Helmet 3,
 yargs 15를 유지하며 Express 5 이전이나 overrides는 필요하지 않았다.
 감사 결과는 해당 시점의 패키지 잠금 파일 기준이며 향후 공지를 대신하지 않는다.
+
+## 운영 보강 (B~G)
+
+- UE 핸들러의 동기 예외·비동기 거부는 오류를 기록하고 해당 UE 소켓을 유지한다.
+  플레이어/SFU 핸들러 예외는 기존처럼 보낸 소켓만 1011로 닫는다.
+  잘못된 JSON/미지원 메시지 거부 정책은 유지한다.
+- `disconnectPlayer.reason`은 문자열로 바꾸고 UTF-8 123바이트 안에서 문자 경계로 자른다.
+- 공통 `modules/logging.js`의 스트림이 외부에 노출되지 않으므로 v3가
+  `LogToFile=true`일 때 `logs/<시각>.error.log`를 별도로 연다(지시서 §5 C 예비안).
+  `console.error`/`console.warn`은 리댁션한 동일한 시간 접두 줄을 stderr와 이 파일에 남긴다.
+  공통 로그 모듈은 변경하지 않는다.
+- STOP 최초 명령 뒤 기존 15초 간격 재시도 4회를 소진하면
+  `/healthz.stopRetry`가 `{state:'exhausted', attempts:4, at:<ISO 시각>}`이고
+  HEARTBEAT에도 경고가 남는다. 새 kill·추가 재시도·타이머를 만들지 않는다.
+  새 브라우저가 수용되거나 마지막 UE 단절을 확인하면 표시를 초기화한다.
+  소켓 단절 확인은 OS PID 종료 증거와 별개다.
+- 플레이어 URL은 WHATWG `URL`로 파싱한다. `OfferToReceive`의 기존 대소문자·빈 값·중복 키 판정을 유지한다.
+- ICE 디스패처가 비문자열 candidate 또는 원격 주소가 없는 경우를 그대로 전달한다.
+  정상 mDNS 변환과 v1 전달 함수 본문은 유지한다.
+
+| 신규 옵션 | 기본값 | 허용 범위 |
+| --- | --- | --- |
+| `MaxWebSocketPayloadBytes` | 4194304 (4 MiB) | 정수 65536..104857600; 플레이어·UE·SFU 모두 적용 |
+| `AppStartMaxAttempts` | 3 | 정수 1..10 |
+
+START 한도는 최초 기동, 미등록 90초 감시, 실제 단절 5초 뒤 기동, offer 20초 좀비 복구의
+모든 실제 START 요청을 함께 센다. 마지막 허용 START도 횟수에 포함되며 그 순간부터
+추가 START는 보류된다. `/healthz.startRetry`는 `state`, `attempts`, `at`를 노출하고,
+소진 중 `/readyz`는 503이다. 한도 도달 로그는 한 번, HEARTBEAT 경고는 주기적으로 남는다.
+한도 때문에 브라우저 소켓을 닫지 않으며 소진된 좀비 복구는 기존 UE/플레이어를 해제하기 전에 멈춘다.
+런처 자체의 timeout/blocked 정책과 START/STOP 직렬화는 별도로 유지한다.
+
+UE 등록이나 브라우저 재접속은 START 횟수를 초기화하지 않는다. React 뷰어의 최대 60회
+자동 재접속으로 한도가 무력화되지 않는다. 현재 UE의 offer가 그 UE를 구독한 대상에게
+정상 전송되거나, `OfferToReceive` 모드에서 UE answer가 정상 전송되면 초기화한다.
+SFU 경로도 UE→구독 SFU offer의 전송 완료를 직접 확인하므로 등록/startStreaming 예비안은 필요하지 않았다.
+잘못된 모드·다른 UE·수신자 없음·전송 실패는 초기화 근거가 아니다.
+브라우저 0명으로 10분 유휴가 만료되거나 시그널링이 재기동해도 초기화한다.
+이 성공은 협상 메시지 전달을 뜻하며 실제 영상·IME 검증을 뜻하지 않는다.
 
 ## 검증 명령
 

@@ -70,8 +70,8 @@ function loadConfig(file, defaults, argv, fileSystem = fs) {
     }
     const cli = { ...argv };
     for (const key of ['_', '$0', 'help', 'version']) delete cli[key];
-    const config = { MaxWebSocketPayloadBytes: 4 * 1024 * 1024, ...defaults, ...loaded, ...cli };
-    for (const [key, min, max] of [['AppCommandTimeoutMs', 1000, 1800000], ['AppCommandKillGraceMs', 100, 60000], ['AppCommandMaxTimeouts', 1, 10], ['MaxWebSocketPayloadBytes', 65536, 104857600]]) {
+    const config = { MaxWebSocketPayloadBytes: 4 * 1024 * 1024, AppStartMaxAttempts: 3, ...defaults, ...loaded, ...cli };
+    for (const [key, min, max] of [['AppCommandTimeoutMs', 1000, 1800000], ['AppCommandKillGraceMs', 100, 60000], ['AppCommandMaxTimeouts', 1, 10], ['MaxWebSocketPayloadBytes', 65536, 104857600], ['AppStartMaxAttempts', 1, 10]]) {
         if (!Number.isInteger(config[key]) || config[key] < min || config[key] > max) {
             const error = new Error(`Invalid ${key}: expected integer ${min}..${max} (value omitted).`);
             error.code = 'INVALID_CONFIG';

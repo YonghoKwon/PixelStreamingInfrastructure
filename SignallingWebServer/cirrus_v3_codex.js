@@ -38,6 +38,9 @@ function startOfferWaitTimer(playerId, streamerId) {
 			startOfferWaitTimer(playerId, streamerId); // Defer this same check; never overlap a command.
 			return;
 		}
+		// Check before removing UE/player sockets: an exhausted budget is
+		// observation-only, and closing browsers would trigger reconnect loops.
+		if (!canStartApp()) return;
 		
 		zombieRestartInProgress = true;
 		console.logColor(logging.Red,
@@ -111,6 +114,7 @@ function startStreamerWatchdog() {
 		// Idle grace is observation-only. A UE/SFU socket is not browser demand.
 		// The independent ten-minute timer remains responsible for shutdown.
 		if (!hasBrowserDemand()) return;
+		if (startRetryStatus.state === 'exhausted') return;
 		
 		// [신규] 앱 시작 후 APP_START_TIMEOUT_MS 내 스트리머 미연결 감지
 		// Watch_Streamers 등이 프로세스를 죽였거나 앱 내부 오류로 연결 못 한 경우 재시작
@@ -169,7 +173,8 @@ const defaultConfig = {
 	AppCommandTimeoutMs: 60000,
 	AppCommandKillGraceMs: 5000,
 	AppCommandMaxTimeouts: 3,
-	MaxWebSocketPayloadBytes: 4 * 1024 * 1024
+	MaxWebSocketPayloadBytes: 4 * 1024 * 1024,
+	AppStartMaxAttempts: 3
 };
 
 const argv = require('yargs').argv;
@@ -393,6 +398,27 @@ function resetStopRetryStatus() {
 	stopRetryStatus = { state: 'idle', attempts: 0, at: null };
 }
 
+let startRetryStatus = { state: 'idle', attempts: 0, at: null };
+
+function resetStartRetryStatus() {
+	startRetryStatus = { state: 'idle', attempts: 0, at: null };
+}
+
+function canStartApp() {
+	return startRetryStatus.attempts < config.AppStartMaxAttempts;
+}
+
+function countStartAttempt() {
+	startRetryStatus.attempts++;
+	if (canStartApp()) {
+		startRetryStatus.state = 'attempting';
+	} else if (startRetryStatus.state !== 'exhausted') {
+		startRetryStatus.state = 'exhausted';
+		startRetryStatus.at = new Date().toISOString();
+		console.warn(`[APP] START budget exhausted (${startRetryStatus.attempts}/${config.AppStartMaxAttempts}); further automatic START disabled until negotiation succeeds or idle expires`);
+	}
+}
+
 // Keep the v1 booleans and scripts. This gate tracks only the current shell command.
 let appCommandInProgress = null;
 let startAfterStop = false;
@@ -430,8 +456,10 @@ function getStreamerHealth() {
 
 function runAppCommand(command, callback) {
 	if (appCommandInProgress || appCommandRunner.isBlocked()) return false;
+	if (command === START_CMD && !canStartApp()) return false;
 	appCommandInProgress = command;
 	if (command === START_CMD) {
+		countStartAttempt();
 		appStopPending = true;
 		appStartTime = Date.now(); // All three START paths retain the same registration deadline.
 		if (streamerGoneTimerId) { clearTimeout(streamerGoneTimerId); streamerGoneTimerId = null; }
@@ -506,6 +534,7 @@ function startApp(forceStart = false) {
 		console.logColor(logging.Green, `[APP] 스트리머 ${streamers.size}개 연결 확인 → appRunning 동기화 (재시작 스킵)`);
 		return;
 	}
+	if (!canStartApp()) return;
 	
 	appRunning = true;  // ← exec 호출 전에 즉시 true로 설정 (중복 방지)
 	appStartTime = Date.now();
@@ -605,6 +634,7 @@ function startIdleTimer() {
 	console.logColor(logging.Yellow, `[APP] 유휴 타이머 시작 (${APP_IDLE_TIMEOUT_MS / 60000}분 후 종료)`);
 	idleTimer = setTimeout(() => {
 		if (browserPlayerCount() === 0) {
+			resetStartRetryStatus();
 			stopApp();
 		}
 	}, APP_IDLE_TIMEOUT_MS);
@@ -623,10 +653,12 @@ app.use(limiter);
 // Liveness is separate from UE registration/readiness and is not media validation.
 function getServiceStatus() {
 	const launcher = appCommandRunner.snapshot();
-	const ready = appStreamerCount(true) > 0 && !appCommandInProgress && launcher.state !== 'blocked';
-	return { status: launcher.state === 'blocked' ? 'degraded' : ready ? 'ready' : 'waiting', ready,
+	const startExhausted = startRetryStatus.state === 'exhausted';
+	const ready = appStreamerCount(true) > 0 && !appCommandInProgress && launcher.state !== 'blocked' && !startExhausted;
+	return { status: launcher.state === 'blocked' || startExhausted || stopRetryStatus.state === 'exhausted' ? 'degraded' : ready ? 'ready' : 'waiting', ready,
 		browsers: browserPlayerCount(), ueStreamers: appStreamerCount(true), launcher,
 		stopRetry: { ...stopRetryStatus },
+		startRetry: { ...startRetryStatus },
 		streamerHealth: getStreamerHealth(),
 		mediaValidated: false };
 }
@@ -936,9 +968,9 @@ class Player {
 		}
 	}
 
-	sendTo(message) {
+	sendTo(message, callback) {
 		const msgString = JSON.stringify(message);
-		this.ws.send(msgString);
+		this.ws.send(msgString, callback);
 	}
 
 	setSFUStreamerComponent(streamerComponent) {
@@ -1243,13 +1275,18 @@ function forwardStreamerMessageToPlayer(streamer, msg) {
 	const playerId = getPlayerIdFromMessage(msg);
 	const player = players.get(playerId);
 	if (player) {
-		// 이 줄 추가 - offer 받았으니 좀비 아님
-		if (msg.type === 'offer' && player.streamerId === streamer.id && streamers.get(streamer.id) === streamer) {
-			clearOfferWaitTimer(playerId);
-		}
+		const negotiation = !streamer.isSFU() && player.streamerId === streamer.id && streamers.get(streamer.id) === streamer &&
+			((msg.type === 'offer' && player.whoSendsOffer === WhoSendsOffer.Streamer) ||
+			 (msg.type === 'answer' && player.whoSendsOffer === WhoSendsOffer.Browser));
 		delete msg.playerId;
 		logForward(streamer.id, playerId, msg);
-		player.sendTo(msg);
+		player.sendTo(msg, negotiation ? error => {
+			if (!error && players.get(playerId) === player && player.ws.readyState === WebSocket.OPEN &&
+				player.streamerId === streamer.id && streamers.get(streamer.id) === streamer && streamer.ws.readyState === WebSocket.OPEN) {
+				clearOfferWaitTimer(playerId);
+				resetStartRetryStatus();
+			}
+		} : undefined);
 	} else {
 		console.warn("No playerId specified, cannot forward message: %s", msg);
 	}
@@ -2001,6 +2038,9 @@ setInterval(() => {
 	);
 	if (stopRetryStatus.state === 'exhausted') {
 		console.warn(`[HEARTBEAT] STOP retries exhausted (${stopRetryStatus.attempts}); operator inspection required`);
+	}
+	if (startRetryStatus.state === 'exhausted') {
+		console.warn(`[HEARTBEAT] START budget exhausted (${startRetryStatus.attempts}); automatic START paused`);
 	}
 	if (streamers.size > 0) {
 		for (let [id, streamer] of streamers) {

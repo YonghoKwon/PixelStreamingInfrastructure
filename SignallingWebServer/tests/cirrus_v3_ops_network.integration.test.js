@@ -48,3 +48,29 @@ test('renamed cirrus.js supports Korean disconnect reasons and records redacted 
         assert.ok(!s.stderr.includes('DEP0169')); assert.equal((await get(s, '/readyz')).status, 200);
     } finally { await s.close(); }
 });
+
+test('real HTTP exposes START exhaustion, preserves browsers across reconnects and recovers after late offer', async () => {
+    const s = await start({ AppStartMaxAttempts: 1 }, { renamed: true });
+    try {
+        const waiting = await socket(s, s.config.HttpPort);
+        await until(() => s.stderr.includes('START budget exhausted'));
+        const health = await get(s, '/healthz');
+        assert.equal(health.status, 200); assert.equal(health.body.startRetry.state, 'exhausted');
+        assert.equal(health.body.startRetry.attempts, 1); assert.equal((await get(s, '/readyz')).status, 503);
+        for (let i = 0; i < 5; i++) {
+            const p = await socket(s, s.config.HttpPort); const ended = once(p, 'close'); p.close(); await ended;
+        }
+        assert.equal(fs.readFileSync(path.join(s.dir, 'launches.txt'), 'utf8'), 'START\n');
+        assert.equal(waiting.readyState, 1);
+        const ue = await socket(s, s.config.StreamerPort);
+        ue.send(JSON.stringify({ type: 'endpointId', id: 'LATE-UE' }));
+        await until(() => s.logs.includes('Registered new streamer: LATE-UE'));
+        assert.equal((await get(s, '/readyz')).status, 503); // Registration is not success.
+        waiting.send(JSON.stringify({ type: 'subscribe', streamerId: 'LATE-UE' }));
+        const connected = await until(() => ue.rows.find(row => row.type === 'playerConnected'));
+        ue.send(JSON.stringify({ type: 'offer', playerId: connected.playerId, sdp: 'v=0\r\n' }));
+        await until(() => waiting.rows.find(row => row.type === 'offer'));
+        const recovered = await get(s, '/readyz'); assert.equal(recovered.status, 200);
+        assert.equal(recovered.body.startRetry.state, 'idle'); assert.equal(recovered.body.startRetry.attempts, 0);
+    } finally { await s.close(); }
+});
