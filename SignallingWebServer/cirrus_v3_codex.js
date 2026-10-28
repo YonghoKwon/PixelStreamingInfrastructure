@@ -992,10 +992,10 @@ let WebSocket = require('ws');
 let sfuMessageHandlers = new Map();
 let playerMessageHandlers = new Map();
 
-function invokeMessageHandler(handler, peer, message, ws) {
+function invokeMessageHandler(handler, peer, message, ws, preserveStreamer = false) {
 	const failed = err => {
-		console.error('[SIGNALLING] Message handler failed: ' + (err.stack || err));
-		if (ws.readyState === WebSocket.OPEN) ws.close(1011, 'Message handler failed');
+		console.error('[SIGNALLING] Message handler failed: ' + (err?.stack || err));
+		if (!preserveStreamer && ws.readyState === WebSocket.OPEN) ws.close(1011, 'Message handler failed');
 	};
 	try {
 		const result = handler(peer, message);
@@ -1215,7 +1215,7 @@ function onStreamerMessageDisconnectPlayer(streamer, msg) {
 	const playerId = getPlayerIdFromMessage(msg);
 	const player = players.get(playerId);
 	if (player) {
-		player.ws.close(1011 /* internal error */, msg.reason);
+		player.ws.close(1011 /* internal error */, v3.closeReason(msg.reason));
 	}
 }
 
@@ -1282,7 +1282,7 @@ streamerServer.on('connection', function (ws, req) {
 			ws.close(1008, 'Unsupported message type');
 			return;
 		}
-		invokeMessageHandler(handler, streamer, msg, ws);
+		invokeMessageHandler(handler, streamer, msg, ws, true);
 	});
 	
 	ws.on('close', function(code, reason) {

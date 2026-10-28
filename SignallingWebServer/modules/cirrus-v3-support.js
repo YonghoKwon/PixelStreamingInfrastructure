@@ -90,6 +90,21 @@ function certificatePath(baseDirectory, configuredPath) {
     return path.isAbsolute(configuredPath) ? path.normalize(configuredPath) : path.resolve(baseDirectory, configuredPath);
 }
 
+// RFC 6455 reserves two bytes of the 125-byte control payload for the code.
+function closeReason(value) {
+    let text;
+    try { text = value == null ? '' : String(value); }
+    catch { text = 'Invalid disconnect reason'; }
+    let result = '', bytes = 0;
+    for (const character of text) {
+        const size = Buffer.byteLength(character, 'utf8');
+        if (bytes + size > 123) break;
+        result += character;
+        bytes += size;
+    }
+    return result;
+}
+
 // Owns only the processes it spawns. No global process-name or UE PID searches.
 function createCommandRunner(options = {}) {
     const launch = options.spawn || spawn;
@@ -187,4 +202,4 @@ function createCommandRunner(options = {}) {
     return { run, snapshot, isBlocked: () => !!blocked, noteRegistered: () => { if (!blocked) timeouts = 0; } };
 }
 
-module.exports = { createLogRedactor, loadConfig, certificatePath, createCommandRunner };
+module.exports = { createLogRedactor, loadConfig, certificatePath, closeReason, createCommandRunner };
