@@ -9,6 +9,7 @@ var app = express();
 
 const fs = require('fs');
 const path = require('path');
+const { URL } = require('url');
 const querystring = require('querystring');
 const bodyParser = require('body-parser');
 const logging = require('./modules/logging.js');
@@ -1582,8 +1583,7 @@ playerMessageHandlers.set('peerDataChannelsReady', forwardPlayerMessage);
 console.logColor(logging.Green, `WebSocket listening for Players connections on :${httpPort}`);
 let playerServer = new WebSocket.Server({ server: config.UseHTTPS ? https : http});
 playerServer.on('connection', function (ws, req) {
-	var url = require('url');
-	const parsedUrl = url.parse(req.url);
+	const parsedUrl = new URL(req.url, 'http://localhost');
 	const urlParams = new URLSearchParams(parsedUrl.search);
 	const whoSendsOffer = urlParams.has('OfferToReceive') && urlParams.get('OfferToReceive') !== 'false' ? WhoSendsOffer.Browser : WhoSendsOffer.Streamer;
 	if (appCommandRunner.isBlocked()) {
