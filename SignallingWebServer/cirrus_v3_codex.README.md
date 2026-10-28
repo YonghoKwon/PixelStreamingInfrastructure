@@ -139,6 +139,7 @@ SFU 경로도 UE→구독 SFU offer의 전송 완료를 직접 확인하므로 �
 ```sh
 node --check cirrus_v3_codex.js
 node --test tests/cirrus_v2_codex.test.js tests/cirrus_v3_codex.test.js tests/cirrus_v3_idle.test.js tests/cirrus_v3_support.test.js tests/cirrus_v3_operations.test.js tests/cirrus_v3_runner.integration.test.js tests/cirrus_v3_http.integration.test.js
+node --test tests/cirrus_v3_ops*.test.js
 ```
 
 호환성 가상 시계 검사는 v2 동작을 독립적으로 확인하기 위해 신규 런처 제한 시간을 늘려 사용한다. 신규 deadline 검사는 기본/짧은 설정으로 별도 실행한다. HTTP 통합 검사는 임시 파일·동적 포트·합성 스트리머를 사용하며 실제 3D 런처를 호출하지 않는다. 실제 프로세스 그룹 종료 검사는 Linux에서만 실행한다.
@@ -150,5 +151,27 @@ node --test tests/cirrus_v2_codex.test.js tests/cirrus_v3_codex.test.js tests/ci
 `CIRRUS_REALTIME_PING_SMOKE=1`은 브라우저를 계속 연결한 채 95초 동안 JSON ping을 멈춰
 두 소켓과 런처 유휴 상태가 유지되는지 검사한다. 이 선택 검사들은 기본 실행에서는 건너뛴다.
 가상/합성 소켓 검사는 실제 UE 프로세스나 회사 서버의 10분 종료 수용 검사를 대신하지 않는다.
+
+## Linux 번들 Node 설치 (H)
+
+SignallingWebServer/SFU/Matchmaker의 `platform_scripts/bash/setup.sh`는 신규 설치 시
+Node **v24.22.1**의 공식 Linux x64 `.tar.gz`를 받으며 `tar -xzf`로 푼다.
+2026-10-28 HEAD 확인에서 같은 버전의 `.tar.gz`/`.tar.xz` 모두 HTTP 200이었다.
+이 변경에서는 `.tar.gz`를 사용하므로 xz 의존성을 추가하지 않았다.
+
+기존 `platform_scripts/bash/node` 디렉터리가 있으면 설치를 건너뛴다.
+업그레이드할 때는 해당 서비스를 정상 종료하고, 해당 컴포넌트의 `node` 폴더를
+백업 이름으로 바꾼 뒤 `setup.sh`를 실행한다. 새 `node/bin/node --version`이
+v24.22.1인지 확인하고 그 Node/npm으로 의존성을 설치한 후 서비스를 다시 기동한다.
+시스템 PATH의 Node 변경만으로 별도 번들 Node나 이미 실행 중인 프로세스가 바뀌지는 않는다.
+
+운영 배포는 `cirrus_v3_codex.js`를 `cirrus.js`로 복사하고 `modules/cirrus-v3-support.js`와
+감사된 package/lock 파일을 함께 배치한다. `cirrus_origin.js`는 백업 원본이다.
+`npm start` 및 기존 Dockerfile 진입점은 변경하지 않는다.
+
+PS-CIRRUS-OPS-20261028 1단계는 다른 작업의 GPU 측정과 병행하므로 Docker/UE/GPU를 사용하지 않는다.
+G1·G2·G3·G6 및 Git Bash `bash -n`/공식 URL HEAD만 수행하며,
+Docker의 실제 영상·IME·10분 STOP(G4), 빈 Linux 환경 setup 실행(G5)은 2단계로 보류한다.
+로컬 신규 통합 검사는 동적 포트, 합성 스트리머, 운영 런처를 가로채는 테스트 스텁만 사용한다.
 
 이 변경은 WSL/Dozen 렌더링 속도나 CPU 경유 전송 비용을 개선하는 변경이 아니다. 로컬 H264 성공을 native RHEL8, 공인 전체 인증서 체인, 실제 SFU 영상 분배, 회사/실센서·오디오·성능 수용으로 확대하지 않는다.

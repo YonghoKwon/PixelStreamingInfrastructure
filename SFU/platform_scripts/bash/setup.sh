@@ -99,10 +99,14 @@ node_version=""
 if [[ -f "${BASH_LOCATION}/node/bin/node" ]]; then
 	node_version=$("${BASH_LOCATION}/node/bin/node" --version)
 fi
-check_and_install "node" "$node_version" "v18.17.0" "curl https://nodejs.org/dist/v18.17.0/node-v18.17.0-linux-x64.tar.gz --output node.tar.xz 
-													&& tar -xf node.tar.xz 
-													&& rm node.tar.xz 
-													&& mv node-v*-linux-x64 \"${BASH_LOCATION}/node\""
+if [[ -d "${BASH_LOCATION}/node" ]]; then
+	echo "Bundled node folder exists ($node_version); skipping installation. To upgrade, stop services and rename this folder first."
+else
+	check_and_install "node" "$node_version" "v24.22.1" "curl -fL https://nodejs.org/dist/v24.22.1/node-v24.22.1-linux-x64.tar.gz --output node.tar.gz
+													&& tar -xzf node.tar.gz
+													&& rm node.tar.gz
+													&& mv node-v24.22.1-linux-x64 \"${BASH_LOCATION}/node\""
+fi
 
 PATH="${BASH_LOCATION}/node/bin:$PATH"
 "${BASH_LOCATION}/node/lib/node_modules/npm/bin/npm-cli.js" install
