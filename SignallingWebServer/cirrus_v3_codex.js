@@ -1259,9 +1259,15 @@ function onStreamerMessageDisconnectPlayer(streamer, msg) {
 
 	const playerId = getPlayerIdFromMessage(msg);
 	const player = players.get(playerId);
-	if (player) {
+	if (player && canRouteToPlayer(streamer, player)) {
 		player.ws.close(1011 /* internal error */, v3.closeReason(msg.reason));
 	}
+}
+
+function canRouteToPlayer(streamer, player) {
+	if (player.streamerId === streamer.id && streamers.get(streamer.id) === streamer) return true;
+	console.warn('[SIGNALLING] Dropped streamer message outside current player subscription');
+	return false;
 }
 
 function onStreamerMessageLayerPreference(streamer, msg) {
@@ -1275,6 +1281,7 @@ function onStreamerMessageLayerPreference(streamer, msg) {
 function forwardStreamerMessageToPlayer(streamer, msg) {
 	const playerId = getPlayerIdFromMessage(msg);
 	const player = players.get(playerId);
+	if (player && !canRouteToPlayer(streamer, player)) return;
 	if (player) {
 		const negotiation = !streamer.isSFU() && player.streamerId === streamer.id && streamers.get(streamer.id) === streamer &&
 			((msg.type === 'offer' && player.whoSendsOffer === WhoSendsOffer.Streamer) ||
@@ -1368,7 +1375,7 @@ streamerServer.on('connection', function (ws, req) {
 function forwardSFUMessageToPlayer(sfuPlayer, msg) {
 	const playerId = getPlayerIdFromMessage(msg);
 	const player = players.get(playerId);
-	if (player) {
+	if (player && canRouteToPlayer(sfuPlayer.getSFUStreamerComponent(), player)) {
 		logForward(sfuPlayer.getSFUStreamerComponent().id, playerId, msg);
 		player.sendTo(msg);
 	}

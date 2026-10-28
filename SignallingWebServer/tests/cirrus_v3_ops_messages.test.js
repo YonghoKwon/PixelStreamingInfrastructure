@@ -5,6 +5,7 @@ const { closeReason } = require('../modules/cirrus-v3-support');
 
 test('disconnectPlayer bounds Korean/emoji reasons at UTF-8 character boundaries', () => {
     const h = createHarness(); const ue = h.streamer(); const p = h.player();
+    p.message({ type: 'subscribe', streamerId: 'A' });
     const reason = '한글😀'.repeat(100);
     ue.message({ type: 'disconnectPlayer', playerId: h.playerId(p), reason });
     const closed = p.closeCalls.at(-1);
@@ -16,6 +17,7 @@ test('disconnectPlayer bounds Korean/emoji reasons at UTF-8 character boundaries
 
 test('disconnectPlayer accepts an object reason and retains the UE socket', () => {
     const h = createHarness(); const ue = h.streamer(); const p = h.player();
+    p.message({ type: 'subscribe', streamerId: 'A' });
     ue.message({ type: 'disconnectPlayer', playerId: h.playerId(p), reason: { message: '종료' } });
     assert.equal(p.closeCalls.at(-1).reason, '[object Object]'); assert.equal(ue.readyState, 1);
     assert.equal(closeReason(null), '');
