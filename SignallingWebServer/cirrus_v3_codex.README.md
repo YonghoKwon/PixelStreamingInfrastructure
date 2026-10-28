@@ -88,6 +88,17 @@ UE 5.3의 `PixelStreamingSignallingConnection.h`에서 `KEEP_ALIVE_INTERVAL` 기
 
 ## 검증
 
+## 런타임 의존성 감사 (A)
+
+Node 24.22.1/npm 11.19.1로 런타임 패키지를 기존 메이저 범위 안에서 갱신했다.
+직접 사용하는 `body-parser`와 `hsts`도 직접 의존성으로 선언한다.
+2026-10-28의 `npm audit --omit=dev` 결과는 critical/high를 포함해 0건이다
+(변경 전 critical 1, high 4, moderate 1, low 5). Express 4, ws 7, Helmet 3,
+yargs 15를 유지하며 Express 5 이전이나 overrides는 필요하지 않았다.
+감사 결과는 해당 시점의 패키지 잠금 파일 기준이며 향후 공지를 대신하지 않는다.
+
+## 검증 명령
+
 ```sh
 node --check cirrus_v3_codex.js
 node --test tests/cirrus_v2_codex.test.js tests/cirrus_v3_codex.test.js tests/cirrus_v3_idle.test.js tests/cirrus_v3_support.test.js tests/cirrus_v3_operations.test.js tests/cirrus_v3_runner.integration.test.js tests/cirrus_v3_http.integration.test.js
