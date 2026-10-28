@@ -168,7 +168,8 @@ const defaultConfig = {
 	HttpMode: 'certificate-only',
 	AppCommandTimeoutMs: 60000,
 	AppCommandKillGraceMs: 5000,
-	AppCommandMaxTimeouts: 3
+	AppCommandMaxTimeouts: 3,
+	MaxWebSocketPayloadBytes: 4 * 1024 * 1024
 };
 
 const argv = require('yargs').argv;
@@ -1265,7 +1266,7 @@ streamerMessageHandlers.set('layerPreference', onStreamerMessageLayerPreference)
 
 console.logColor(logging.Green, `WebSocket listening for Streamer connections on :${streamerPort}`)
 // let streamerServer = new WebSocket.Server({ port: streamerPort, backlog: 1 });
-let streamerServer = new WebSocket.Server({ port: streamerPort });
+let streamerServer = new WebSocket.Server({ port: streamerPort, maxPayload: config.MaxWebSocketPayloadBytes });
 streamerServer.on('connection', function (ws, req) {
 	console.logColor(logging.Green, `Streamer connected: ${req.connection.remoteAddress}`);
 	sendStreamerConnectedToMatchmaker();
@@ -1428,7 +1429,7 @@ sfuMessageHandlers.set('startStreaming', onSFUMessageStartStreaming);
 sfuMessageHandlers.set('stopStreaming', onSFUMessageStopStreaming);
 
 console.logColor(logging.Green, `WebSocket listening for SFU connections on :${sfuPort}`);
-let sfuServer = new WebSocket.Server({ port: sfuPort });
+let sfuServer = new WebSocket.Server({ port: sfuPort, maxPayload: config.MaxWebSocketPayloadBytes });
 sfuServer.on('connection', function (ws, req) {
 
 	let playerId = sanitizePlayerId(nextPlayerId++);
@@ -1534,6 +1535,19 @@ function onPlayerMessageListStreamers(player, msg) {
 	player.sendTo(reply);
 }
 
+// Preserve the production v1 forwarding body; reject unsafe mDNS assumptions
+// at the ICE dispatcher while retaining the original wire payload unchanged.
+function forwardPlayerIceMessage(player, msg) {
+	const candidate = msg.candidate?.candidate;
+	const address = player.ws?._socket?.remoteAddress;
+	if (typeof candidate !== 'string' || typeof address !== 'string' || !address) {
+		logForward(player.id, player.streamerId, msg);
+		player.sendFrom(msg);
+		return;
+	}
+	forwardPlayerMessage(player, msg);
+}
+
 function forwardPlayerMessage(player, msg) {
 	// mDNS(.local) ICE candidate 필터링
 	// Chrome 등 최신 브라우저가 프라이버시 보호로 .local 주소를 보내는데
@@ -1574,14 +1588,14 @@ playerMessageHandlers.set('unsubscribe', onPlayerMessageUnsubscribe);
 playerMessageHandlers.set('stats', onPlayerMessageStats);
 playerMessageHandlers.set('offer', forwardPlayerMessage);
 playerMessageHandlers.set('answer', forwardPlayerMessage);
-playerMessageHandlers.set('iceCandidate', forwardPlayerMessage);
+playerMessageHandlers.set('iceCandidate', forwardPlayerIceMessage);
 playerMessageHandlers.set('listStreamers', onPlayerMessageListStreamers);
 // sfu related messages
 playerMessageHandlers.set('dataChannelRequest', forwardPlayerMessage);
 playerMessageHandlers.set('peerDataChannelsReady', forwardPlayerMessage);
 
 console.logColor(logging.Green, `WebSocket listening for Players connections on :${httpPort}`);
-let playerServer = new WebSocket.Server({ server: config.UseHTTPS ? https : http});
+let playerServer = new WebSocket.Server({ server: config.UseHTTPS ? https : http, maxPayload: config.MaxWebSocketPayloadBytes });
 playerServer.on('connection', function (ws, req) {
 	const parsedUrl = new URL(req.url, 'http://localhost');
 	const urlParams = new URLSearchParams(parsedUrl.search);
