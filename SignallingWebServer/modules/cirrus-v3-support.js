@@ -70,13 +70,18 @@ function loadConfig(file, defaults, argv, fileSystem = fs) {
     }
     const cli = { ...argv };
     for (const key of ['_', '$0', 'help', 'version']) delete cli[key];
-    const config = { MaxWebSocketPayloadBytes: 4 * 1024 * 1024, AppStartMaxAttempts: 3, ...defaults, ...loaded, ...cli };
+    const config = { MaxWebSocketPayloadBytes: 4 * 1024 * 1024, AppStartMaxAttempts: 3, PlayerKeepaliveTimeoutMs: 30000, ...defaults, ...loaded, ...cli };
     for (const [key, min, max] of [['AppCommandTimeoutMs', 1000, 1800000], ['AppCommandKillGraceMs', 100, 60000], ['AppCommandMaxTimeouts', 1, 10], ['MaxWebSocketPayloadBytes', 65536, 104857600], ['AppStartMaxAttempts', 1, 10]]) {
         if (!Number.isInteger(config[key]) || config[key] < min || config[key] > max) {
             const error = new Error(`Invalid ${key}: expected integer ${min}..${max} (value omitted).`);
             error.code = 'INVALID_CONFIG';
             throw error;
         }
+    }
+    if (!Number.isInteger(config.PlayerKeepaliveTimeoutMs) ||
+        (config.PlayerKeepaliveTimeoutMs !== 0 && (config.PlayerKeepaliveTimeoutMs < 5000 || config.PlayerKeepaliveTimeoutMs > 600000))) {
+        const error = new Error('Invalid PlayerKeepaliveTimeoutMs: expected 0 or integer 5000..600000 (value omitted).');
+        error.code = 'INVALID_CONFIG'; throw error;
     }
     if (!['certificate-only', 'web'].includes(config.HttpMode)) {
         const error = new Error('Invalid HttpMode: use certificate-only or web (value omitted).');
@@ -104,6 +109,31 @@ function closeReason(value) {
         bytes += size;
     }
     return result;
+}
+
+// WebSocket control frames, not UE JSON keepalives. This owns one browser's
+// timer only; termination flows through the existing close/admission cleanup.
+function monitorPlayerSocket(ws, timeoutMs, options = {}) {
+    if (timeoutMs === 0) return;
+    const every = options.setInterval || setInterval;
+    const cancel = options.clearInterval || clearInterval;
+    let alive = true, expired = false;
+    const pong = () => { alive = true; };
+    const cleanup = () => { cancel(timer); ws.removeListener('pong', pong); ws.removeListener('close', cleanup); };
+    const expire = () => {
+        if (expired) return;
+        expired = true; cleanup(); options.onTimeout?.(); ws.terminate();
+    };
+    ws.on('pong', pong);
+    const timer = every(() => {
+        if (ws.readyState !== 1) return cleanup();
+        if (!alive) return expire();
+        alive = false;
+        try { ws.ping(); } catch { expire(); }
+    }, timeoutMs);
+    timer.unref?.();
+    ws.once('close', cleanup);
+    return cleanup;
 }
 
 // The shared logger keeps its stream private. Own a v3 error/warn file instead
@@ -230,4 +260,4 @@ function createCommandRunner(options = {}) {
     return { run, snapshot, isBlocked: () => !!blocked, noteRegistered: () => { if (!blocked) timeouts = 0; } };
 }
 
-module.exports = { createLogRedactor, loadConfig, certificatePath, closeReason, installErrorFileLogger, createCommandRunner };
+module.exports = { createLogRedactor, loadConfig, certificatePath, closeReason, monitorPlayerSocket, installErrorFileLogger, createCommandRunner };

@@ -174,7 +174,8 @@ const defaultConfig = {
 	AppCommandKillGraceMs: 5000,
 	AppCommandMaxTimeouts: 3,
 	MaxWebSocketPayloadBytes: 4 * 1024 * 1024,
-	AppStartMaxAttempts: 3
+	AppStartMaxAttempts: 3,
+	PlayerKeepaliveTimeoutMs: 30000
 };
 
 const argv = require('yargs').argv;
@@ -1664,6 +1665,8 @@ playerServer.on('connection', function (ws, req) {
 	console.logColor(logging.Green, `player ${playerId} (${req.connection.remoteAddress}) connected`);
 	let player = new Player(playerId, ws, PlayerType.Regular, whoSendsOffer);
 	players.set(playerId, player);
+	v3.monitorPlayerSocket(ws, config.PlayerKeepaliveTimeoutMs, { setInterval, clearInterval,
+		onTimeout: () => console.warn(`[PLAYER] keepalive timeout: ${playerId}`) });
 
 	// 추가 - 플레이어 접속 시 3D 앱 실행
 	resetStopRetryStatus();

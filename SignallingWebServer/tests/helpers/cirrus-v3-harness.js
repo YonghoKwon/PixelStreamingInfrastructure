@@ -40,6 +40,8 @@ function createHarness(overrides = {}, options = {}) {
             this.sent = [];
             this.closeCalls = [];
             this.terminateCalls = 0;
+            this.pingCalls = 0;
+            this.autoPong = true;
             this._socket = { remoteAddress: '::ffff:127.0.0.1' };
         }
         send(raw, callback) {
@@ -59,6 +61,7 @@ function createHarness(overrides = {}, options = {}) {
             this.emit('close', code, Buffer.from(reason));
         }
         terminate() { this.terminateCalls++; this.finishClose(1006); }
+        ping() { this.pingCalls++; if (this.autoPong) this.emit('pong'); }
         message(payload) { this.emit('message', typeof payload === 'string' ? payload : JSON.stringify(payload)); }
     }
     class FakeServer extends EventEmitter {
