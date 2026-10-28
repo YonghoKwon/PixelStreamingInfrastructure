@@ -1634,7 +1634,13 @@ playerMessageHandlers.set('peerDataChannelsReady', forwardPlayerMessage);
 console.logColor(logging.Green, `WebSocket listening for Players connections on :${httpPort}`);
 let playerServer = new WebSocket.Server({ server: config.UseHTTPS ? https : http, maxPayload: config.MaxWebSocketPayloadBytes });
 playerServer.on('connection', function (ws, req) {
-	const parsedUrl = new URL(req.url, 'http://localhost');
+	let parsedUrl;
+	try { parsedUrl = new URL(req.url, 'http://localhost'); }
+	catch {
+		console.warn('Invalid player request URL (value omitted).');
+		ws.close(1008, 'Invalid request URL');
+		return;
+	}
 	const urlParams = new URLSearchParams(parsedUrl.search);
 	const whoSendsOffer = urlParams.has('OfferToReceive') && urlParams.get('OfferToReceive') !== 'false' ? WhoSendsOffer.Browser : WhoSendsOffer.Streamer;
 	if (appCommandRunner.isBlocked()) {

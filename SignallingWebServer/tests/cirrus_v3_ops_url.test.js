@@ -15,3 +15,12 @@ test('WHATWG URL retains OfferToReceive semantics including empty/case/duplicate
         assert.equal(h.run(`players.get(${JSON.stringify(id)}).whoSendsOffer === WhoSendsOffer.Browser`), expected, url);
     }
 });
+
+test('malformed player URL is contained before admission or launch', () => {
+    const h = createHarness();
+    for (const url of ['//[', 'http://[invalid', '//%']) {
+        let p; assert.doesNotThrow(() => { p = h.player(url); });
+        assert.equal(p.closeCalls.at(-1).code, 1008); assert.equal(h.count(), 0);
+    }
+    assert.equal(h.commands.length, 0);
+});
