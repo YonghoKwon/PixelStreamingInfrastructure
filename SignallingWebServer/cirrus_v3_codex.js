@@ -1431,6 +1431,10 @@ function onSFUMessageStartStreaming(sfuPlayer, msg) {
 	}
 
 	registerStreamer(sfuStreamerComponent.id, sfuStreamerComponent);
+	// SFU can publish media without a UE offer addressed to a browser. Use the
+	// work-order fallback only while its subscribed, registered UE is open.
+	const ue = streamers.get(sfuPlayer.streamerId);
+	if (ue && !ue.isSFU() && ue.ws.readyState === WebSocket.OPEN) resetStartRetryStatus();
 }
 
 function onSFUMessageStopStreaming(sfuPlayer, msg) {
