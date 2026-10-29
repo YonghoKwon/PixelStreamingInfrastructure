@@ -70,7 +70,11 @@ function loadConfig(file, defaults, argv, fileSystem = fs) {
     }
     const cli = { ...argv };
     for (const key of ['_', '$0', 'help', 'version']) delete cli[key];
-    const config = { MaxWebSocketPayloadBytes: 4 * 1024 * 1024, AppStartMaxAttempts: 3, PlayerKeepaliveTimeoutMs: 30000, AppStartCooldownMs: 600000, ...defaults, ...loaded, ...cli };
+    // yargs may provide these two CLI literals as strings. JSON values still
+    // require real booleans; do not coerce arbitrary truthy values.
+    if (cli.AppAutoStart === 'true') cli.AppAutoStart = true;
+    else if (cli.AppAutoStart === 'false') cli.AppAutoStart = false;
+    const config = { MaxWebSocketPayloadBytes: 4 * 1024 * 1024, AppStartMaxAttempts: 3, PlayerKeepaliveTimeoutMs: 30000, AppStartCooldownMs: 600000, AppIdleTimeoutMs: 600000, AppAutoStart: true, ...defaults, ...loaded, ...cli };
     for (const [key, min, max] of [['AppCommandTimeoutMs', 1000, 1800000], ['AppCommandKillGraceMs', 100, 60000], ['AppCommandMaxTimeouts', 1, 10], ['MaxWebSocketPayloadBytes', 65536, 104857600], ['AppStartMaxAttempts', 1, 10]]) {
         if (!Number.isInteger(config[key]) || config[key] < min || config[key] > max) {
             const error = new Error(`Invalid ${key}: expected integer ${min}..${max} (value omitted).`);
@@ -86,6 +90,15 @@ function loadConfig(file, defaults, argv, fileSystem = fs) {
     if (!Number.isInteger(config.AppStartCooldownMs) ||
         (config.AppStartCooldownMs !== 0 && (config.AppStartCooldownMs < 60000 || config.AppStartCooldownMs > 3600000))) {
         const error = new Error('Invalid AppStartCooldownMs: expected 0 or integer 60000..3600000 (value omitted).');
+        error.code = 'INVALID_CONFIG'; throw error;
+    }
+    if (!Number.isInteger(config.AppIdleTimeoutMs) ||
+        (config.AppIdleTimeoutMs !== 0 && (config.AppIdleTimeoutMs < 60000 || config.AppIdleTimeoutMs > 86400000))) {
+        const error = new Error('Invalid AppIdleTimeoutMs: expected 0 or integer 60000..86400000 (value omitted).');
+        error.code = 'INVALID_CONFIG'; throw error;
+    }
+    if (typeof config.AppAutoStart !== 'boolean') {
+        const error = new Error('Invalid AppAutoStart: expected boolean (value omitted).');
         error.code = 'INVALID_CONFIG'; throw error;
     }
     if (!['certificate-only', 'web'].includes(config.HttpMode)) {
