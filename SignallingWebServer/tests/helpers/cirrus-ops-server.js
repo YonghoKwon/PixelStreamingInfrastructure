@@ -15,7 +15,7 @@ async function freePort() {
     const s = net.createServer(); await new Promise(resolve => s.listen(0, '127.0.0.1', resolve));
     const port = s.address().port; await new Promise(resolve => s.close(resolve)); return port;
 }
-async function start(overrides = {}, { renamed = false } = {}) {
+async function start(overrides = {}, { renamed = false, cli = [] } = {}) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ps-cirrus-ops-'));
     const root = path.resolve(__dirname, '../..');
     const ports = []; while (ports.length < 3) { const p = await freePort(); if (!ports.includes(p)) ports.push(p); }
@@ -29,7 +29,7 @@ async function start(overrides = {}, { renamed = false } = {}) {
         fs.symlinkSync(path.join(root, 'modules'), path.join(dir, 'modules'), 'junction');
     }
     const s = { dir, config, sockets: [], logs: '', stderr: '', exit: null };
-    s.child = spawn(process.execPath, ['--require', path.join(__dirname, 'cirrus-ops-launcher-preload.js'), entry, '--configFile', configFile],
+    s.child = spawn(process.execPath, ['--require', path.join(__dirname, 'cirrus-ops-launcher-preload.js'), entry, '--configFile', configFile, ...cli],
         { cwd: dir, windowsHide: true, env: { ...process.env, NODE_PATH: path.join(root, 'node_modules'), CIRRUS_OPS_LAUNCH_TRACE: path.join(dir, 'launches.txt') } });
     s.child.stdout.on('data', b => { s.logs = (s.logs + b).slice(-200000); });
     s.child.stderr.on('data', b => { s.stderr = (s.stderr + b).slice(-200000); });

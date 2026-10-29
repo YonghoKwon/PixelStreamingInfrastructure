@@ -34,6 +34,10 @@ function startOfferWaitTimer(playerId, streamerId) {
 		if (!player || player !== expectedPlayer || player.ws.readyState !== WebSocket.OPEN ||
 			player.streamerId !== streamerId || streamers.get(streamerId) !== expectedStreamer ||
 			!expectedStreamer || expectedStreamer.ws.readyState !== WebSocket.OPEN) return;
+		if (!allowAppAutoStart('offer-timeout')) {
+			player.ws.close(); // External supervision: isolate this waiter, never restart UE.
+			return;
+		}
 		if (zombieRestartInProgress || appCommandInProgress || appCommandRunner.isBlocked()) {
 			startOfferWaitTimer(playerId, streamerId); // Defer this same check; never overlap a command.
 			return;
@@ -125,6 +129,7 @@ function startStreamerWatchdog() {
 		// Idle grace is observation-only. A UE/SFU socket is not browser demand.
 		// The independent ten-minute timer remains responsible for shutdown.
 		if (!hasBrowserDemand()) return;
+		if (!allowAppAutoStart('registration-watchdog')) return;
 		if (startRetryStatus.state === 'exhausted') return;
 		
 		// [신규] 앱 시작 후 APP_START_TIMEOUT_MS 내 스트리머 미연결 감지
@@ -206,6 +211,10 @@ if (config.LogToFile) {
 }
 
 console.log("Config: " + JSON.stringify(logRedactor.redact(config), null, '\t'));
+console.log(`[APP] Lifecycle | AppAutoStart=${config.AppAutoStart} | AppIdleTimeoutMs=${config.AppIdleTimeoutMs} | 모드: ${lifecycleModeLabel()}`);
+if (!config.AppAutoStart && config.AppIdleTimeoutMs > 0) {
+	console.warn('[APP] 자동 기동은 꺼져 있으나 유휴 종료는 켜져 있음: 외부가 기동한 3D도 설정된 무접속 시간 후 종료됨');
+}
 
 var http = require('http').Server(app);
 
@@ -416,6 +425,21 @@ function resetStopRetryStatus() {
 
 let startRetryTimer = null;
 let startRetryStatus = { state: 'idle', attempts: 0, at: null, nextRetryAt: null, slowRetries: 0 };
+const autoStartSuppressionCauses = new Set();
+
+function lifecycleModeLabel() {
+	if (config.AppAutoStart) return '접속 시 기동';
+	return config.AppIdleTimeoutMs === 0 ? '상시(자동기동 끔)' : '외부 기동·유휴 종료(자동기동 끔)';
+}
+
+function allowAppAutoStart(cause) {
+	if (config.AppAutoStart) return true;
+	if (!autoStartSuppressionCauses.has(cause)) {
+		autoStartSuppressionCauses.add(cause);
+		console.warn(`[APP] AppAutoStart=false (${cause}): 외부 감시가 3D 기동을 관리함`);
+	}
+	return false;
+}
 
 function resetStartRetryStatus() {
 	if (startRetryTimer) { clearTimeout(startRetryTimer); startRetryTimer = null; }
@@ -423,15 +447,17 @@ function resetStartRetryStatus() {
 }
 
 function canStartApp() {
-	return startRetryStatus.attempts < config.AppStartMaxAttempts;
+	return config.AppAutoStart && startRetryStatus.attempts < config.AppStartMaxAttempts;
 }
 
 function scheduleSlowStartRetry() {
+	if (!allowAppAutoStart('slow-retry')) { resetStartRetryStatus(); return; }
 	if (startRetryTimer || startRetryStatus.state !== 'exhausted' || config.AppStartCooldownMs === 0) return;
 	startRetryStatus.nextRetryAt = new Date(Date.now() + config.AppStartCooldownMs).toISOString();
 	startRetryTimer = setTimeout(() => {
 		startRetryTimer = null;
 		startRetryStatus.nextRetryAt = null;
+		if (!allowAppAutoStart('slow-retry')) { resetStartRetryStatus(); return; }
 		if (startRetryStatus.state !== 'exhausted') return;
 		// A busy/blocked/no-demand round is skipped, never queued for an early retry.
 		scheduleSlowStartRetry();
@@ -446,6 +472,7 @@ function scheduleSlowStartRetry() {
 }
 
 function countStartAttempt(slowRetry = false) {
+	if (!config.AppAutoStart) return;
 	startRetryStatus.attempts++;
 	if (slowRetry) startRetryStatus.slowRetries++;
 	if (canStartApp()) {
@@ -494,6 +521,7 @@ function getStreamerHealth() {
 }
 
 function runAppCommand(command, callback, slowRetry = false) {
+	if (command === START_CMD && !allowAppAutoStart('command-entry')) return false;
 	if (appCommandInProgress || appCommandRunner.isBlocked()) return false;
 	if (command === START_CMD && !canStartApp() && !slowRetry) return false;
 	appCommandInProgress = command;
@@ -522,7 +550,7 @@ function runAppCommand(command, callback, slowRetry = false) {
 			}
 		}
 		if (!appCommandInProgress) {
-			if (resumeStart && hasBrowserDemand()) startApp(true);
+			if (resumeStart && hasBrowserDemand() && allowAppAutoStart('after-stop')) startApp(true);
 			else if (resumeStop && browserPlayerCount() === 0) stopApp(true);
 		}
 	};
@@ -548,6 +576,7 @@ function startApp(forceStart = false) {
 	}
 
 	stopAfterStart = false; // A new browser cancels a queued idle shutdown.
+	if (!allowAppAutoStart('browser-demand')) return;
 	if (appCommandInProgress) {
 		if (appCommandInProgress === STOP_CMD) startAfterStop = true;
 		return;
@@ -669,6 +698,7 @@ function resetIdleTimer() {
 
 function startIdleTimer() {
 	resetIdleTimer();
+	if (config.AppIdleTimeoutMs === 0) return;
 	idleTimerStartTime = Date.now();  // 추가
 	console.logColor(logging.Yellow, `[APP] 유휴 타이머 시작 (${config.AppIdleTimeoutMs / 60000}분 후 종료)`);
 	idleTimer = setTimeout(() => {
@@ -698,6 +728,7 @@ function getServiceStatus() {
 		browsers: browserPlayerCount(), ueStreamers: appStreamerCount(true), launcher,
 		stopRetry: { ...stopRetryStatus },
 		startRetry: { ...startRetryStatus },
+		lifecycle: { autoStart: config.AppAutoStart, idleTimeoutMs: config.AppIdleTimeoutMs },
 		streamerHealth: getStreamerHealth(),
 		mediaValidated: false };
 }
@@ -1273,7 +1304,7 @@ function onStreamerDisconnected(streamer) {
 				// 시나리오: Watch_Streamers가 프로세스 종료 → 5초 내 플레이어 재접속 →
 				// startApp()이 appRunning=true 로 스킵됨 → 5초 후 appRunning=false 전환 →
 				// 하지만 아무도 startApp() 재호출 안 함 → 앱 영구 미기동 버그 수정
-				if (hasBrowserDemand()) {
+				if (hasBrowserDemand() && allowAppAutoStart('streamer-disconnect')) {
 					console.logColor(logging.Yellow,
 						`[APP] 스트리머 종료 후 대기 플레이어 ${players.size}명 감지 → 자동 재시작`
 					);
@@ -2089,7 +2120,9 @@ setInterval(() => {
 	
 	// 유휴 타이머 경과 시간 계산
 	let idleStr = '-';
-	if (browserPlayerCount() > 0) {
+	if (config.AppIdleTimeoutMs === 0) {
+		idleStr = '자동 종료 꺼짐';
+	} else if (browserPlayerCount() > 0) {
 		idleStr = '접속 중 (타이머 없음)';
 	} else if (stopRetryTimer) {
 		idleStr = `종료 재시도 중 (스트리머 ${streamers.size}개 남음)`;		
@@ -2107,7 +2140,7 @@ setInterval(() => {
 	}
 	
 	console.logColor(logging.Cyan,
-		`[${new Date().toISOString()}] HEARTBEAT | Streamers: ${streamers.size} | Players: ${players.size} | Browsers: ${browserPlayerCount()} | UE ping: ${getStreamerHealth().state} | Uptime: ${uptimeStr} | 유휴: ${idleStr}`
+		`[${new Date().toISOString()}] HEARTBEAT | Streamers: ${streamers.size} | Players: ${players.size} | Browsers: ${browserPlayerCount()} | UE ping: ${getStreamerHealth().state} | Uptime: ${uptimeStr} | 모드: ${lifecycleModeLabel()} | 유휴: ${idleStr}`
 	);
 	if (stopRetryStatus.state === 'exhausted') {
 		console.warn(`[HEARTBEAT] STOP retries exhausted (${stopRetryStatus.attempts}); operator inspection required`);

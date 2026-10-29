@@ -45,7 +45,16 @@ function createHarness(overrides = {}, options = {}) {
             this._socket = { remoteAddress: '::ffff:127.0.0.1' };
         }
         send(raw, callback) {
-            if (this.readyState !== 1) throw new Error('Socket is not open');
+            if (this.readyState !== 1) {
+                // Opt-in for real multi-peer close handshakes: ws 7 only throws
+                // in CONNECTING; CLOSING/CLOSED report an error through cb.
+                // Keep the legacy strict adapter unchanged for existing tests.
+                if (options.realClosingSend && (this.readyState === 2 || this.readyState === 3)) {
+                    if (callback) callback(new Error('Socket is not open'));
+                    return;
+                }
+                throw new Error('Socket is not open');
+            }
             if (this.failSend) { if (callback) callback(new Error('simulated send failure')); return; }
             this.sent.push(JSON.parse(raw));
             if (callback) callback();
