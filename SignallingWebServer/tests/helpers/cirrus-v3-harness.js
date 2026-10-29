@@ -45,10 +45,14 @@ function createHarness(overrides = {}, options = {}) {
             this._socket = { remoteAddress: '::ffff:127.0.0.1' };
         }
         send(raw, callback) {
-            if (this.readyState !== 1) throw new Error('Socket is not open');
+            if (this.readyState !== 1) {
+                if (options.closedSendCallback) { callback?.(new Error('Socket is not open')); return; }
+                throw new Error('Socket is not open');
+            }
             if (this.failSend) { if (callback) callback(new Error('simulated send failure')); return; }
             this.sent.push(JSON.parse(raw));
-            if (this.respondToPlayerConnected && this.sent.at(-1).type === 'playerConnected') {
+            if (this.respondToPlayerConnected && this.sent.at(-1).type === 'playerConnected' &&
+                !this.withheldOfferPlayers.has(this.sent.at(-1).playerId)) {
                 const message = this.sent.at(-1);
                 // Defer like a real network response until subscribe has armed its timer.
                 schedule(() => {
@@ -155,6 +159,7 @@ function createHarness(overrides = {}, options = {}) {
     function streamer(id = 'A') {
         const socket = connect('streamerServer');
         socket.respondToPlayerConnected = !!options.autoOffer;
+        socket.withheldOfferPlayers = new Set(); // Opt-in per-player negotiation failure injection.
         if (id !== null) socket.message({ type: 'endpointId', id });
         return socket;
     }

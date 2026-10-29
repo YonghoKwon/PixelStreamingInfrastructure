@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const { createHarness } = require('./cirrus-v3-harness');
 
-const harness = (config = {}, options = {}) => createHarness(config, { autoOffer: true, ...options });
+const harness = (config = {}, options = {}) => createHarness(config, { autoOffer: true, closedSendCallback: true, ...options });
 const starts = h => h.commands.filter(c => /Start_|run\.sh restart/.test(c.command));
 const stops = h => h.commands.filter(c => /Stop_|run\.sh stop/.test(c.command));
 function completePending(h) {
