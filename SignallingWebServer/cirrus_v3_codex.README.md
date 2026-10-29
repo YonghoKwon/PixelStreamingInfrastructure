@@ -4,6 +4,56 @@
 
 ## 실행
 
+### 서버별 3D 생명주기 설정
+
+| 서버 유형 | `AppAutoStart` | `AppIdleTimeoutMs` | 동작 |
+| --- | --- | --- | --- |
+| 기존 접속 시 기동 서버 | 생략 또는 `true` | 생략 또는 `600000` | 브라우저 접속에 따라 기동, 마지막 퇴장 또는 브라우저 없는 UE 등록부터 10분 뒤 종료 |
+| 외부 감시가 담당하는 상시 서버 | `false` | `0` | cirrus가 3D를 기동·재시작하거나 유휴 종료하지 않음 |
+| 외부 기동 + cirrus 유휴 정리 | `false` | `60000` 등 양수 | 3D는 외부가 기동, cirrus는 무접속 시간 후 STOP. 시작 시 이 조합을 한 줄 경고 |
+| cirrus 기동 + 외부 종료 | `true` | `0` | 접속 시 기동·복구는 cirrus, 무접속 자동 종료는 하지 않음 |
+
+`AppIdleTimeoutMs`는 정수 `0` 또는 `60000..86400000`, 기본값은 `600000`이다.
+`AppAutoStart`는 JSON boolean만 받으며, CLI의 정확한 `true`/`false` 문자열도 boolean으로 해석한다.
+잘못된 값은 내용을 출력하지 않고 `INVALID_CONFIG`로 시작을 거부한다.
+설정 우선순위는 기본값 < JSON < CLI다.
+
+`config.on-demand.example.json`과 `config.always-on.example.json`은 기존 `config.json`의
+기본 설정을 복사한 예시다. 서버별 파일로 복사한 후 포트·인증서·기존 서비스 설정을 검토한다.
+실제 `config.json`은 자동으로 변경하지 않는다. 예를 들어 v3를 `cirrus.js`로 배포한 경우:
+
+```sh
+node cirrus.js --configFile ./config.always-on.example.json
+node cirrus.js --configFile ./server-config.json --AppAutoStart=false
+```
+
+JSON은 `JSON.parse`로 읽으므로 `//` 또는 블록 주석을 넣으면 시작이 실패한다.
+예시의 `_운영모드`, `_설명_AppIdleTimeoutMs`, `_설명_AppAutoStart`는 설명용 키이며
+동작 옵션으로 검사하거나 사용하지 않는다. 설명 키와 문구는 로그에서 가려지지 않도록
+리댁션 대상 영문 단어를 포함하지 않는다. `_`로 시작하는 설명에 비밀값을 넣지 않는다.
+
+상시 모드의 매일 재기동은 외부 작업이 **3D만** 종료·기동한다. 그동안 cirrus는 START를
+요청하지 않고 브라우저의 기존 재접속·대기/streamerList·협상 흐름을 유지한다.
+브라우저 2~3명의 접속·등록 감시·5초 단절 복구·STOP 뒤 대기·좀비·느린 재시도 경로와
+최종 명령 진입부 모두 `AppAutoStart=false`에서 START를 차단한다. 차단 사유는 종류별 한 번 기록한다.
+offer 20초 초과 시 정상 시청자가 없어도 해당 대기 브라우저만 기존 close 방식으로 닫고
+UE와 다른 브라우저는 유지한다. START 예산은 `idle`로 유지하며 느린 재시도를 만들지 않는다.
+I의 브라우저 정리와 J의 구독 검사, 정상 시청자 보호는 두 모드에 공통이다.
+
+단독으로 기동한 일반 UE가 브라우저 없이 등록되면 등록 시각부터 설정된 유휴 시간을 다시 센다.
+SFU 등록·STOP 실행 중·런처 blocked·좀비 복구 중에는 이 등록 타이머를 시작하지 않는다.
+브라우저 접속은 타이머를 취소한다. 외부 기동 3D의 PID를 STOP 스크립트가 관리하지 못하면
+기존 4회 재시도 후 `stopRetry.exhausted`를 보고 운영자가 확인한다. 추가 강제 kill은 하지 않는다.
+
+`/healthz.lifecycle`에 `{autoStart, idleTimeoutMs}`를 표시한다. `/readyz`의 기존 등록/명령/차단
+판정은 유지하며 실제 영상 수용을 의미하지 않는다. 시작 로그와 HEARTBEAT에 모드를 표시하고,
+유휴 자동 종료가 꺼져 있으면 HEARTBEAT 유휴 칸에 `자동 종료 꺼짐`을 표시한다.
+고정 10분 상수는 호환 기본값 정의로만 유지하고 실제 타이머·로그는 설정값을 사용한다.
+
+생명주기 신규 검사는 가상 시계·다중 합성 시청자와 동적 포트 Node 통합 검사다.
+PS-CIRRUS-LIFE-20261029 1단계에서는 Docker·UE·운영 런처를 실행하지 않으며 실제 시간과
+상시 모드 외부 감시 스크립트의 수용은 2단계 검증 대상이다.
+
 SignallingWebServer의 기존 의존성을 설치한 Node 24.22.1 이상 환경에서 실행한다.
 
 ```sh
