@@ -20,7 +20,7 @@ async function start(overrides = {}, { renamed = false, cli = [] } = {}) {
     const root = path.resolve(__dirname, '../..');
     const ports = []; while (ports.length < 3) { const p = await freePort(); if (!ports.includes(p)) ports.push(p); }
     const config = { UseFrontend: false, UseHTTPS: false, UseMatchmaker: false, UseAuthentication: false,
-        LogToFile: true, LogVerbose: false, HttpPort: ports[0], StreamerPort: ports[1], SFUPort: ports[2], ...overrides };
+        LogToFile: true, LogVerbose: false, HttpPort: ports[0], StreamerPort: ports[1], SFUPort: ports[2], PlayerNegotiationGapMs: 0, ...overrides };
     const configFile = path.join(dir, 'config.json'); fs.writeFileSync(configFile, JSON.stringify(config));
     let entry = path.join(root, 'cirrus_v3_codex.js');
     if (renamed) {
