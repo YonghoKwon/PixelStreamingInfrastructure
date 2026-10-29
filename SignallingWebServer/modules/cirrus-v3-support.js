@@ -2,6 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { format } = require('node:util');
 const { spawn } = require('node:child_process');
 
 const secretKey = /password|passphrase|credential|secret|token|authorization|api[-_]?key|private[-_]?key/i;
@@ -69,13 +70,23 @@ function loadConfig(file, defaults, argv, fileSystem = fs) {
     }
     const cli = { ...argv };
     for (const key of ['_', '$0', 'help', 'version']) delete cli[key];
-    const config = { ...defaults, ...loaded, ...cli };
-    for (const [key, min, max] of [['AppCommandTimeoutMs', 1000, 1800000], ['AppCommandKillGraceMs', 100, 60000], ['AppCommandMaxTimeouts', 1, 10]]) {
+    const config = { MaxWebSocketPayloadBytes: 4 * 1024 * 1024, AppStartMaxAttempts: 3, PlayerKeepaliveTimeoutMs: 30000, AppStartCooldownMs: 600000, ...defaults, ...loaded, ...cli };
+    for (const [key, min, max] of [['AppCommandTimeoutMs', 1000, 1800000], ['AppCommandKillGraceMs', 100, 60000], ['AppCommandMaxTimeouts', 1, 10], ['MaxWebSocketPayloadBytes', 65536, 104857600], ['AppStartMaxAttempts', 1, 10]]) {
         if (!Number.isInteger(config[key]) || config[key] < min || config[key] > max) {
             const error = new Error(`Invalid ${key}: expected integer ${min}..${max} (value omitted).`);
             error.code = 'INVALID_CONFIG';
             throw error;
         }
+    }
+    if (!Number.isInteger(config.PlayerKeepaliveTimeoutMs) ||
+        (config.PlayerKeepaliveTimeoutMs !== 0 && (config.PlayerKeepaliveTimeoutMs < 5000 || config.PlayerKeepaliveTimeoutMs > 600000))) {
+        const error = new Error('Invalid PlayerKeepaliveTimeoutMs: expected 0 or integer 5000..600000 (value omitted).');
+        error.code = 'INVALID_CONFIG'; throw error;
+    }
+    if (!Number.isInteger(config.AppStartCooldownMs) ||
+        (config.AppStartCooldownMs !== 0 && (config.AppStartCooldownMs < 60000 || config.AppStartCooldownMs > 3600000))) {
+        const error = new Error('Invalid AppStartCooldownMs: expected 0 or integer 60000..3600000 (value omitted).');
+        error.code = 'INVALID_CONFIG'; throw error;
     }
     if (!['certificate-only', 'web'].includes(config.HttpMode)) {
         const error = new Error('Invalid HttpMode: use certificate-only or web (value omitted).');
@@ -88,6 +99,73 @@ function loadConfig(file, defaults, argv, fileSystem = fs) {
 function certificatePath(baseDirectory, configuredPath) {
     if (typeof configuredPath !== 'string' || !configuredPath.trim()) throw new Error('Certificate path must be a nonempty string.');
     return path.isAbsolute(configuredPath) ? path.normalize(configuredPath) : path.resolve(baseDirectory, configuredPath);
+}
+
+// RFC 6455 reserves two bytes of the 125-byte control payload for the code.
+function closeReason(value) {
+    let text;
+    try { text = value == null ? '' : String(value); }
+    catch { text = 'Invalid disconnect reason'; }
+    let result = '', bytes = 0;
+    for (const character of text) {
+        const size = Buffer.byteLength(character, 'utf8');
+        if (bytes + size > 123) break;
+        result += character;
+        bytes += size;
+    }
+    return result;
+}
+
+// WebSocket control frames, not UE JSON keepalives. This owns one browser's
+// timer only; termination flows through the existing close/admission cleanup.
+function monitorPlayerSocket(ws, timeoutMs, options = {}) {
+    if (timeoutMs === 0) return;
+    const every = options.setInterval || setInterval;
+    const cancel = options.clearInterval || clearInterval;
+    let alive = true, expired = false;
+    const pong = () => { alive = true; };
+    const cleanup = () => { cancel(timer); ws.removeListener('pong', pong); ws.removeListener('close', cleanup); };
+    const expire = () => {
+        if (expired) return;
+        expired = true; cleanup(); options.onTimeout?.(); ws.terminate();
+    };
+    ws.on('pong', pong);
+    const timer = every(() => {
+        if (ws.readyState !== 1) return cleanup();
+        if (!alive) return expire();
+        alive = false;
+        try { ws.ping(); } catch { expire(); }
+    }, timeoutMs);
+    timer.unref?.();
+    ws.once('close', cleanup);
+    return cleanup;
+}
+
+// The shared logger keeps its stream private. Own a v3 error/warn file instead
+// of modifying that module or duplicating these messages on stdout.
+function installErrorFileLogger(target, options = {}) {
+    const fileSystem = options.fileSystem || fs;
+    const directory = options.directory || './logs/';
+    const now = options.now || (() => new Date());
+    const redact = options.redact || (value => value);
+    const date = now();
+    const pad = (value, width = 2) => String(value).padStart(width, '0');
+    const name = `${date.getFullYear()}.${pad(date.getMonth())}.${pad(date.getDate())}.${pad(date.getHours())}.${pad(date.getMinutes())}.${pad(date.getSeconds())}.error.log`;
+    fileSystem.mkdirSync(directory, { recursive: true });
+    const output = fileSystem.createWriteStream(path.join(directory, name), { flags: 'a' });
+    const originals = {};
+    for (const method of ['error', 'warn']) {
+        originals[method] = target[method].bind(target);
+        target[method] = (...args) => {
+            const time = now();
+            const prefix = `${pad(time.getHours())}:${pad(time.getMinutes())}:${pad(time.getSeconds())}.${pad(time.getMilliseconds(), 3)}`;
+            const line = `${prefix} ${format(...args.map(value => redact(value)))}`;
+            originals[method](line);
+            output.write(line + '\n');
+        };
+    }
+    output.on('error', () => originals.error('Cirrus v3 error log write failed (details omitted).'));
+    return output;
 }
 
 // Owns only the processes it spawns. No global process-name or UE PID searches.
@@ -187,4 +265,4 @@ function createCommandRunner(options = {}) {
     return { run, snapshot, isBlocked: () => !!blocked, noteRegistered: () => { if (!blocked) timeouts = 0; } };
 }
 
-module.exports = { createLogRedactor, loadConfig, certificatePath, createCommandRunner };
+module.exports = { createLogRedactor, loadConfig, certificatePath, closeReason, monitorPlayerSocket, installErrorFileLogger, createCommandRunner };

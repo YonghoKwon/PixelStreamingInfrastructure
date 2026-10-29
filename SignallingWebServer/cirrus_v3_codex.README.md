@@ -86,11 +86,88 @@ UE 5.3의 `PixelStreamingSignallingConnection.h`에서 `KEEP_ALIVE_INTERVAL` 기
 기동 명령이 반환됐다는 이유로 실제 ping 수신 시각을 갱신하지 않는다.
 수정 파일을 배치한 뒤 실행 중인 시그널링 서비스를 재기동해야 새 동작이 적용된다.
 
-## 검증
+## 런타임 의존성 감사 (A)
+
+Node 24.22.1/npm 11.19.1로 런타임 패키지를 기존 메이저 범위 안에서 갱신했다.
+직접 사용하는 `body-parser`와 `hsts`도 직접 의존성으로 선언한다.
+2026-10-28의 `npm audit --omit=dev` 결과는 critical/high를 포함해 0건이다
+(변경 전 critical 1, high 4, moderate 1, low 5). Express 4, ws 7, Helmet 3,
+yargs 15를 유지하며 Express 5 이전이나 overrides는 필요하지 않았다.
+감사 결과는 해당 시점의 패키지 잠금 파일 기준이며 향후 공지를 대신하지 않는다.
+
+## 운영 보강 (B~G)
+
+- UE 핸들러의 동기 예외·비동기 거부는 오류를 기록하고 해당 UE 소켓을 유지한다.
+  플레이어/SFU 핸들러 예외는 기존처럼 보낸 소켓만 1011로 닫는다.
+  잘못된 JSON/미지원 메시지 거부 정책은 유지한다.
+- `disconnectPlayer.reason`은 문자열로 바꾸고 UTF-8 123바이트 안에서 문자 경계로 자른다.
+- 공통 `modules/logging.js`의 스트림이 외부에 노출되지 않으므로 v3가
+  `LogToFile=true`일 때 `logs/<시각>.error.log`를 별도로 연다(지시서 §5 C 예비안).
+  `console.error`/`console.warn`은 리댁션한 동일한 시간 접두 줄을 stderr와 이 파일에 남긴다.
+  공통 로그 모듈은 변경하지 않는다.
+- STOP 최초 명령 뒤 기존 15초 간격 재시도 4회를 소진하면
+  `/healthz.stopRetry`가 `{state:'exhausted', attempts:4, at:<ISO 시각>}`이고
+  HEARTBEAT에도 경고가 남는다. 새 kill·추가 재시도·타이머를 만들지 않는다.
+  새 브라우저가 수용되거나 마지막 UE 단절을 확인하면 표시를 초기화한다.
+  소켓 단절 확인은 OS PID 종료 증거와 별개다.
+- 플레이어 URL은 WHATWG `URL`로 파싱한다. `OfferToReceive`의 기존 대소문자·빈 값·중복 키 판정을 유지한다.
+- ICE 디스패처가 비문자열 candidate 또는 원격 주소가 없는 경우를 그대로 전달한다.
+  정상 mDNS 변환과 v1 전달 함수 본문은 유지한다.
+
+| 신규 옵션 | 기본값 | 허용 범위 |
+| --- | --- | --- |
+| `MaxWebSocketPayloadBytes` | 4194304 (4 MiB) | 정수 65536..104857600; 플레이어·UE·SFU 모두 적용 |
+| `AppStartMaxAttempts` | 3 | 정수 1..10 |
+
+START 한도는 최초 기동, 미등록 90초 감시, 실제 단절 5초 뒤 기동, offer 20초 좀비 복구의
+모든 실제 START 요청을 함께 센다. 마지막 허용 START도 횟수에 포함되며 그 순간부터
+추가 START는 보류된다. `/healthz.startRetry`는 `state`, `attempts`, `at`를 노출하고,
+소진 중 `/readyz`는 503이다. 한도 도달 로그는 한 번, HEARTBEAT 경고는 주기적으로 남는다.
+한도 때문에 브라우저 소켓을 닫지 않으며 소진된 좀비 복구는 기존 UE/플레이어를 해제하기 전에 멈춘다.
+런처 자체의 timeout/blocked 정책과 START/STOP 직렬화는 별도로 유지한다.
+
+UE 등록이나 브라우저 재접속은 START 횟수를 초기화하지 않는다. React 뷰어의 최대 60회
+자동 재접속으로 한도가 무력화되지 않는다. 현재 UE의 offer가 그 UE를 구독한 대상에게
+정상 전송되거나, `OfferToReceive` 모드에서 UE answer가 정상 전송되면 초기화한다.
+SFU는 정상 UE가 등록되어 있고 그 UE를 구독한 SFU의 `startStreaming`을 수신하면
+지시서의 예비 성공 기준으로 초기화한다(R1). 일반 UE→브라우저 판정은 그대로 유지한다.
+잘못된 모드·다른 UE·수신자 없음·전송 실패는 초기화 근거가 아니다.
+브라우저 0명으로 10분 유휴가 만료되거나 시그널링이 재기동해도 초기화한다.
+이 성공은 협상 메시지 전달을 뜻하며 실제 영상·IME 검증을 뜻하지 않는다.
+
+## 2단계 운영 보강 (I·J·K·L)
+
+| 옵션 | 기본값 | 허용 범위 |
+| --- | --- | --- |
+| `PlayerKeepaliveTimeoutMs` | 30000 | 0(끔) 또는 정수 5000..600000 |
+| `AppStartCooldownMs` | 600000 | 0(끔, 기존 G 정책) 또는 정수 60000..3600000 |
+
+브라우저 포트만 WebSocket 프로토콜 ping/pong으로 확인한다. JSON ping은 보내지 않는다.
+직전 ping에 응답하지 않은 브라우저만 다음 주기에 terminate하며 기존 close 경로로 자리·구독을 정리한다.
+다른 시청자·UE·SFU는 유지하고 마지막 브라우저가 사라졌을 때 유휴 10분을 센다.
+브라우저 close 시 해당 타이머/pong 리스너를 정리한다. UE JSON ping은 여전히 진단 전용이다.
+
+UE 또는 SFU의 브라우저 대상 전달은 현재 등록 인스턴스와 대상의 구독이 일치해야 한다.
+다른 스트리머의 offer/answer/ICE와 disconnectPlayer 요청은 전달하지 않는다.
+현재 스트리머 인스턴스와 offer/answer가 정상 전달된 OPEN 브라우저는 정상 시청자로 표시한다.
+그런 시청자가 있으면 새 브라우저의 offer 20초 초과는 그 브라우저만 기존 close 방식으로 종료한다.
+정상 시청자가 없을 때만 기존 좀비 복구를 수행하며 START 한도·직렬화·blocked 정책을 따른다.
+같은 ID로 UE가 교체돼도 이전 인스턴스와의 협상 기록은 정상 시청 증거로 재사용하지 않는다.
+
+START 한도가 소진되면 `AppStartCooldownMs`마다 대기 중인 브라우저가 있는 경우에만 1회 느린 START를 한다.
+그 시도도 attempts/slowRetries에 포함하고 상태는 exhausted를 유지한다.
+90초 감시·5초 복구·좀비 경로·재접속은 이 예외를 우회하지 못한다.
+명령 실행 중·blocked·좀비 처리 중인 회차는 건너뛰며 다음 쿨다운 전에는 따라잡기 시도를 하지 않는다.
+`startRetry.nextRetryAt`, `startRetry.slowRetries`와 HEARTBEAT에서 상태를 확인할 수 있다.
+협상 성공·10분 유휴 만료·시그널링 재기동은 느린 타이머와 집계를 함께 초기화한다.
+자동화 테스트의 기존 G 조건은 `AppStartCooldownMs=0`으로 분리해 기존 기대값을 유지한다.
+
+## 검증 명령
 
 ```sh
 node --check cirrus_v3_codex.js
 node --test tests/cirrus_v2_codex.test.js tests/cirrus_v3_codex.test.js tests/cirrus_v3_idle.test.js tests/cirrus_v3_support.test.js tests/cirrus_v3_operations.test.js tests/cirrus_v3_runner.integration.test.js tests/cirrus_v3_http.integration.test.js
+node --test tests/cirrus_v3_ops*.test.js
 ```
 
 호환성 가상 시계 검사는 v2 동작을 독립적으로 확인하기 위해 신규 런처 제한 시간을 늘려 사용한다. 신규 deadline 검사는 기본/짧은 설정으로 별도 실행한다. HTTP 통합 검사는 임시 파일·동적 포트·합성 스트리머를 사용하며 실제 3D 런처를 호출하지 않는다. 실제 프로세스 그룹 종료 검사는 Linux에서만 실행한다.
@@ -102,5 +179,32 @@ node --test tests/cirrus_v2_codex.test.js tests/cirrus_v3_codex.test.js tests/ci
 `CIRRUS_REALTIME_PING_SMOKE=1`은 브라우저를 계속 연결한 채 95초 동안 JSON ping을 멈춰
 두 소켓과 런처 유휴 상태가 유지되는지 검사한다. 이 선택 검사들은 기본 실행에서는 건너뛴다.
 가상/합성 소켓 검사는 실제 UE 프로세스나 회사 서버의 10분 종료 수용 검사를 대신하지 않는다.
+
+## Linux 번들 Node 설치 (H)
+
+SignallingWebServer/SFU/Matchmaker의 `platform_scripts/bash/setup.sh`는 신규 설치 시
+Node **v24.22.1**의 공식 Linux x64 `.tar.gz`를 받으며 `tar -xzf`로 푼다.
+2026-10-28 HEAD 확인에서 같은 버전의 `.tar.gz`/`.tar.xz` 모두 HTTP 200이었다.
+이 변경에서는 `.tar.gz`를 사용하므로 xz 의존성을 추가하지 않았다.
+
+실제 UBI8 설치 검사에서는 기존 shell 파일의 CRLF를 **Linux 배포 복사본에서만 LF로 정규화**했다.
+보호 대상 `common_utils.sh` 원본은 수정하지 않았다. 기존 설치 스크립트의 coturn 자동 설치는
+apt 계열을 전제하므로 RHEL8/UBI에는 coturn을 미리 설치해야 한다. 검사 이미지는 EPEL의 실제 coturn
+패키지를 준비한 뒤 세 setup.sh 전체를 실행했고 각각 v24.22.1과 기존 Node 폴더 재사용을 확인했다.
+
+기존 `platform_scripts/bash/node` 디렉터리가 있으면 설치를 건너뛴다.
+업그레이드할 때는 해당 서비스를 정상 종료하고, 해당 컴포넌트의 `node` 폴더를
+백업 이름으로 바꾼 뒤 `setup.sh`를 실행한다. 새 `node/bin/node --version`이
+v24.22.1인지 확인하고 그 Node/npm으로 의존성을 설치한 후 서비스를 다시 기동한다.
+시스템 PATH의 Node 변경만으로 별도 번들 Node나 이미 실행 중인 프로세스가 바뀌지는 않는다.
+
+운영 배포는 `cirrus_v3_codex.js`를 `cirrus.js`로 복사하고 `modules/cirrus-v3-support.js`와
+감사된 package/lock 파일을 함께 배치한다. `cirrus_origin.js`는 백업 원본이다.
+`npm start` 및 기존 Dockerfile 진입점은 변경하지 않는다.
+
+PS-CIRRUS-OPS-20261028 1단계는 다른 작업의 GPU 측정과 병행하므로 Docker/UE/GPU를 사용하지 않는다.
+G1·G2·G3·G6 및 Git Bash `bash -n`/공식 URL HEAD만 수행하며,
+Docker의 실제 영상·IME·10분 STOP(G4), 빈 Linux 환경 setup 실행(G5)은 2단계로 보류한다.
+로컬 신규 통합 검사는 동적 포트, 합성 스트리머, 운영 런처를 가로채는 테스트 스텁만 사용한다.
 
 이 변경은 WSL/Dozen 렌더링 속도나 CPU 경유 전송 비용을 개선하는 변경이 아니다. 로컬 H264 성공을 native RHEL8, 공인 전체 인증서 체인, 실제 SFU 영상 분배, 회사/실센서·오디오·성능 수용으로 확대하지 않는다.

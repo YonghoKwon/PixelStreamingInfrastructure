@@ -40,6 +40,8 @@ function createHarness(overrides = {}, options = {}) {
             this.sent = [];
             this.closeCalls = [];
             this.terminateCalls = 0;
+            this.pingCalls = 0;
+            this.autoPong = true;
             this._socket = { remoteAddress: '::ffff:127.0.0.1' };
         }
         send(raw, callback) {
@@ -59,6 +61,7 @@ function createHarness(overrides = {}, options = {}) {
             this.emit('close', code, Buffer.from(reason));
         }
         terminate() { this.terminateCalls++; this.finishClose(1006); }
+        ping() { this.pingCalls++; if (this.autoPong) this.emit('pong'); }
         message(payload) { this.emit('message', typeof payload === 'string' ? payload : JSON.stringify(payload)); }
     }
     class FakeServer extends EventEmitter {
@@ -78,9 +81,13 @@ function createHarness(overrides = {}, options = {}) {
         exit(code) { this.exitCode = code; this.exited = true; } });
     const fakeFs = {
         existsSync() { return true; },
+        mkdirSync() {},
+        createWriteStream() { return Object.assign(new EventEmitter(), { write() {} }); },
         readFileSync(file, encoding) {
             let content;
-            if (String(file).endsWith('.json')) content = JSON.stringify({ AppCommandTimeoutMs: 900000, ...overrides });
+            // Legacy lifecycle cases isolate the old no-cooldown G policy.
+            // New slow-retry cases opt into the production cooldown explicitly.
+            if (String(file).endsWith('.json')) content = JSON.stringify({ AppCommandTimeoutMs: 900000, AppStartCooldownMs: 0, ...overrides });
             else if (String(file).includes('chain')) content = '-----BEGIN CERTIFICATE-----\nINTERMEDIATE\n-----END CERTIFICATE-----';
             else content = '-----BEGIN CERTIFICATE-----\nLEAF\n-----END CERTIFICATE-----';
             return encoding ? content : Buffer.from(content);

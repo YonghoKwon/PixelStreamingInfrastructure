@@ -9,6 +9,7 @@ var app = express();
 
 const fs = require('fs');
 const path = require('path');
+const { URL } = require('url');
 const querystring = require('querystring');
 const bodyParser = require('body-parser');
 const logging = require('./modules/logging.js');
@@ -37,6 +38,14 @@ function startOfferWaitTimer(playerId, streamerId) {
 			startOfferWaitTimer(playerId, streamerId); // Defer this same check; never overlap a command.
 			return;
 		}
+		if (hasNegotiatedViewer(expectedStreamer, playerId)) {
+			console.warn(`[ZOMBIE] Offer timeout for player ${playerId}; negotiated viewers retained`);
+			player.ws.close(); // Same close code/reason as disconnectAllPlayers.
+			return;
+		}
+		// Check before removing UE/player sockets: an exhausted budget is
+		// observation-only, and closing browsers would trigger reconnect loops.
+		if (!canStartApp()) return;
 		
 		zombieRestartInProgress = true;
 		console.logColor(logging.Red,
@@ -97,6 +106,12 @@ function clearOfferWaitTimer(playerId) {
 	}
 }
 
+function hasNegotiatedViewer(streamer, exceptId) {
+	return [...players.values()].some(player => player.id !== exceptId && !player.isSFU() &&
+		player.ws.readyState === WebSocket.OPEN && player.streamerId === streamer.id &&
+		player.negotiatedStreamer === streamer && streamers.get(streamer.id) === streamer);
+}
+
 // 상단 변수 선언부에 추가
 let lastStreamerPingTime = null;
 let lastStreamerRegistrationTime = null;
@@ -110,6 +125,7 @@ function startStreamerWatchdog() {
 		// Idle grace is observation-only. A UE/SFU socket is not browser demand.
 		// The independent ten-minute timer remains responsible for shutdown.
 		if (!hasBrowserDemand()) return;
+		if (startRetryStatus.state === 'exhausted') return;
 		
 		// [신규] 앱 시작 후 APP_START_TIMEOUT_MS 내 스트리머 미연결 감지
 		// Watch_Streamers 등이 프로세스를 죽였거나 앱 내부 오류로 연결 못 한 경우 재시작
@@ -167,7 +183,11 @@ const defaultConfig = {
 	HttpMode: 'certificate-only',
 	AppCommandTimeoutMs: 60000,
 	AppCommandKillGraceMs: 5000,
-	AppCommandMaxTimeouts: 3
+	AppCommandMaxTimeouts: 3,
+	MaxWebSocketPayloadBytes: 4 * 1024 * 1024,
+	AppStartMaxAttempts: 3,
+	PlayerKeepaliveTimeoutMs: 30000,
+	AppStartCooldownMs: 600000
 };
 
 const argv = require('yargs').argv;
@@ -178,6 +198,7 @@ logRedactor.remember(config);
 
 if (config.LogToFile) {
 	logging.RegisterFileLogger('./logs/');
+	v3.installErrorFileLogger(console, { fileSystem: fs, redact: logRedactor.redact });
 }
 
 console.log("Config: " + JSON.stringify(logRedactor.redact(config), null, '\t'));
@@ -384,6 +405,55 @@ let streamerGoneTimerId = null;
 let stopRetryTimer = null;
 const STOP_RETRY_INTERVAL_MS = 15 * 1000;  // 15초마다 재시도
 const STOP_RETRY_MAX = 4;  // 최대 4회 재시도 (명령 실행 중인 회차는 건너뜀)
+let stopRetryStatus = { state: 'idle', attempts: 0, at: null };
+
+function resetStopRetryStatus() {
+	stopRetryStatus = { state: 'idle', attempts: 0, at: null };
+}
+
+let startRetryTimer = null;
+let startRetryStatus = { state: 'idle', attempts: 0, at: null, nextRetryAt: null, slowRetries: 0 };
+
+function resetStartRetryStatus() {
+	if (startRetryTimer) { clearTimeout(startRetryTimer); startRetryTimer = null; }
+	startRetryStatus = { state: 'idle', attempts: 0, at: null, nextRetryAt: null, slowRetries: 0 };
+}
+
+function canStartApp() {
+	return startRetryStatus.attempts < config.AppStartMaxAttempts;
+}
+
+function scheduleSlowStartRetry() {
+	if (startRetryTimer || startRetryStatus.state !== 'exhausted' || config.AppStartCooldownMs === 0) return;
+	startRetryStatus.nextRetryAt = new Date(Date.now() + config.AppStartCooldownMs).toISOString();
+	startRetryTimer = setTimeout(() => {
+		startRetryTimer = null;
+		startRetryStatus.nextRetryAt = null;
+		if (startRetryStatus.state !== 'exhausted') return;
+		// A busy/blocked/no-demand round is skipped, never queued for an early retry.
+		scheduleSlowStartRetry();
+		if (!hasBrowserDemand() || appCommandInProgress || appCommandRunner.isBlocked() || zombieRestartInProgress) return;
+		console.warn('[APP] START cooldown elapsed; one slow retry');
+		appRunning = true;
+		runAppCommand(START_CMD, error => {
+			if (error) { appRunning = appStreamerCount(true) > 0; console.error(`[APP] Slow START failed: ${error.message}`); }
+		}, true);
+	}, config.AppStartCooldownMs);
+	startRetryTimer.unref?.();
+}
+
+function countStartAttempt(slowRetry = false) {
+	startRetryStatus.attempts++;
+	if (slowRetry) startRetryStatus.slowRetries++;
+	if (canStartApp()) {
+		startRetryStatus.state = 'attempting';
+	} else if (startRetryStatus.state !== 'exhausted') {
+		startRetryStatus.state = 'exhausted';
+		startRetryStatus.at = new Date().toISOString();
+		console.warn(`[APP] START budget exhausted (${startRetryStatus.attempts}/${config.AppStartMaxAttempts}); further automatic START disabled until negotiation succeeds or idle expires`);
+		scheduleSlowStartRetry();
+	}
+}
 
 // Keep the v1 booleans and scripts. This gate tracks only the current shell command.
 let appCommandInProgress = null;
@@ -420,10 +490,12 @@ function getStreamerHealth() {
 		lastStreamerPingTime === null ? 'awaiting-ping' : 'healthy', ageMs };
 }
 
-function runAppCommand(command, callback) {
+function runAppCommand(command, callback, slowRetry = false) {
 	if (appCommandInProgress || appCommandRunner.isBlocked()) return false;
+	if (command === START_CMD && !canStartApp() && !slowRetry) return false;
 	appCommandInProgress = command;
 	if (command === START_CMD) {
+		countStartAttempt(slowRetry);
 		appStopPending = true;
 		appStartTime = Date.now(); // All three START paths retain the same registration deadline.
 		if (streamerGoneTimerId) { clearTimeout(streamerGoneTimerId); streamerGoneTimerId = null; }
@@ -498,6 +570,7 @@ function startApp(forceStart = false) {
 		console.logColor(logging.Green, `[APP] 스트리머 ${streamers.size}개 연결 확인 → appRunning 동기화 (재시작 스킵)`);
 		return;
 	}
+	if (!canStartApp()) return;
 	
 	appRunning = true;  // ← exec 호출 전에 즉시 true로 설정 (중복 방지)
 	appStartTime = Date.now();
@@ -562,6 +635,7 @@ function stopApp(forceStop = false) {
 		retryCount++;
 		if (appStreamerCount() === 0) {
 			console.logColor(logging.Green, `[APP] 스트리머 완전 종료 확인 (재시도 ${retryCount}회)`);
+			resetStopRetryStatus();
 			clearInterval(stopRetryTimer);
 			stopRetryTimer = null;
 			return;
@@ -574,6 +648,7 @@ function stopApp(forceStop = false) {
 		forceCloseAllStreamers('idle shutdown retry ' + retryCount);
 		
 		if (retryCount >= STOP_RETRY_MAX) {
+			stopRetryStatus = { state: 'exhausted', attempts: retryCount, at: new Date().toISOString() };
 			console.logColor(logging.Red, `[APP] 최대 재시도 초과 → 재시도 중단`);
 			clearInterval(stopRetryTimer);
 			stopRetryTimer = null;
@@ -595,6 +670,7 @@ function startIdleTimer() {
 	console.logColor(logging.Yellow, `[APP] 유휴 타이머 시작 (${APP_IDLE_TIMEOUT_MS / 60000}분 후 종료)`);
 	idleTimer = setTimeout(() => {
 		if (browserPlayerCount() === 0) {
+			resetStartRetryStatus();
 			stopApp();
 		}
 	}, APP_IDLE_TIMEOUT_MS);
@@ -613,9 +689,12 @@ app.use(limiter);
 // Liveness is separate from UE registration/readiness and is not media validation.
 function getServiceStatus() {
 	const launcher = appCommandRunner.snapshot();
-	const ready = appStreamerCount(true) > 0 && !appCommandInProgress && launcher.state !== 'blocked';
-	return { status: launcher.state === 'blocked' ? 'degraded' : ready ? 'ready' : 'waiting', ready,
+	const startExhausted = startRetryStatus.state === 'exhausted';
+	const ready = appStreamerCount(true) > 0 && !appCommandInProgress && launcher.state !== 'blocked' && !startExhausted;
+	return { status: launcher.state === 'blocked' || startExhausted || stopRetryStatus.state === 'exhausted' ? 'degraded' : ready ? 'ready' : 'waiting', ready,
 		browsers: browserPlayerCount(), ueStreamers: appStreamerCount(true), launcher,
+		stopRetry: { ...stopRetryStatus },
+		startRetry: { ...startRetryStatus },
 		streamerHealth: getStreamerHealth(),
 		mediaValidated: false };
 }
@@ -882,6 +961,7 @@ class Player {
 	}
 
 	unsubscribe() {
+		delete this.negotiatedStreamer;
 		clearOfferWaitTimer(this.id);
 		if (this.streamerId && streamers.has(this.streamerId)) {
 			if (this.type == PlayerType.SFU) {
@@ -925,9 +1005,9 @@ class Player {
 		}
 	}
 
-	sendTo(message) {
+	sendTo(message, callback) {
 		const msgString = JSON.stringify(message);
-		this.ws.send(msgString);
+		this.ws.send(msgString, callback);
 	}
 
 	setSFUStreamerComponent(streamerComponent) {
@@ -992,10 +1072,10 @@ let WebSocket = require('ws');
 let sfuMessageHandlers = new Map();
 let playerMessageHandlers = new Map();
 
-function invokeMessageHandler(handler, peer, message, ws) {
+function invokeMessageHandler(handler, peer, message, ws, preserveStreamer = false) {
 	const failed = err => {
-		console.error('[SIGNALLING] Message handler failed: ' + (err.stack || err));
-		if (ws.readyState === WebSocket.OPEN) ws.close(1011, 'Message handler failed');
+		console.error('[SIGNALLING] Message handler failed: ' + (err?.stack || err));
+		if (!preserveStreamer && ws.readyState === WebSocket.OPEN) ws.close(1011, 'Message handler failed');
 	};
 	try {
 		const result = handler(peer, message);
@@ -1169,6 +1249,7 @@ function onStreamerDisconnected(streamer) {
 	}
 	disconnectAllPlayers(streamer.id);
 	streamers.delete(streamer.id);
+	if (appStreamerCount() === 0) resetStopRetryStatus();
 	
 	// 스트리머가 끊기면 appRunning 상태 재동기화
 	if (appStreamerCount() === 0) {
@@ -1214,9 +1295,15 @@ function onStreamerMessageDisconnectPlayer(streamer, msg) {
 
 	const playerId = getPlayerIdFromMessage(msg);
 	const player = players.get(playerId);
-	if (player) {
-		player.ws.close(1011 /* internal error */, msg.reason);
+	if (player && canRouteToPlayer(streamer, player)) {
+		player.ws.close(1011 /* internal error */, v3.closeReason(msg.reason));
 	}
+}
+
+function canRouteToPlayer(streamer, player) {
+	if (player.streamerId === streamer.id && streamers.get(streamer.id) === streamer) return true;
+	console.warn('[SIGNALLING] Dropped streamer message outside current player subscription');
+	return false;
 }
 
 function onStreamerMessageLayerPreference(streamer, msg) {
@@ -1230,14 +1317,21 @@ function onStreamerMessageLayerPreference(streamer, msg) {
 function forwardStreamerMessageToPlayer(streamer, msg) {
 	const playerId = getPlayerIdFromMessage(msg);
 	const player = players.get(playerId);
+	if (player && !canRouteToPlayer(streamer, player)) return;
 	if (player) {
-		// 이 줄 추가 - offer 받았으니 좀비 아님
-		if (msg.type === 'offer' && player.streamerId === streamer.id && streamers.get(streamer.id) === streamer) {
-			clearOfferWaitTimer(playerId);
-		}
+		const negotiation = !streamer.isSFU() && player.streamerId === streamer.id && streamers.get(streamer.id) === streamer &&
+			((msg.type === 'offer' && player.whoSendsOffer === WhoSendsOffer.Streamer) ||
+			 (msg.type === 'answer' && player.whoSendsOffer === WhoSendsOffer.Browser));
 		delete msg.playerId;
 		logForward(streamer.id, playerId, msg);
-		player.sendTo(msg);
+		player.sendTo(msg, negotiation ? error => {
+			if (!error && players.get(playerId) === player && player.ws.readyState === WebSocket.OPEN &&
+				player.streamerId === streamer.id && streamers.get(streamer.id) === streamer && streamer.ws.readyState === WebSocket.OPEN) {
+				clearOfferWaitTimer(playerId);
+				if (!player.isSFU()) player.negotiatedStreamer = streamer;
+				resetStartRetryStatus();
+			}
+		} : undefined);
 	} else {
 		console.warn("No playerId specified, cannot forward message: %s", msg);
 	}
@@ -1254,7 +1348,7 @@ streamerMessageHandlers.set('layerPreference', onStreamerMessageLayerPreference)
 
 console.logColor(logging.Green, `WebSocket listening for Streamer connections on :${streamerPort}`)
 // let streamerServer = new WebSocket.Server({ port: streamerPort, backlog: 1 });
-let streamerServer = new WebSocket.Server({ port: streamerPort });
+let streamerServer = new WebSocket.Server({ port: streamerPort, maxPayload: config.MaxWebSocketPayloadBytes });
 streamerServer.on('connection', function (ws, req) {
 	console.logColor(logging.Green, `Streamer connected: ${req.connection.remoteAddress}`);
 	sendStreamerConnectedToMatchmaker();
@@ -1282,7 +1376,7 @@ streamerServer.on('connection', function (ws, req) {
 			ws.close(1008, 'Unsupported message type');
 			return;
 		}
-		invokeMessageHandler(handler, streamer, msg, ws);
+		invokeMessageHandler(handler, streamer, msg, ws, true);
 	});
 	
 	ws.on('close', function(code, reason) {
@@ -1318,9 +1412,17 @@ streamerServer.on('connection', function (ws, req) {
 function forwardSFUMessageToPlayer(sfuPlayer, msg) {
 	const playerId = getPlayerIdFromMessage(msg);
 	const player = players.get(playerId);
-	if (player) {
+	if (player && canRouteToPlayer(sfuPlayer.getSFUStreamerComponent(), player)) {
 		logForward(sfuPlayer.getSFUStreamerComponent().id, playerId, msg);
-		player.sendTo(msg);
+		const source = sfuPlayer.getSFUStreamerComponent();
+		player.sendTo(msg, error => {
+			if (!error && msg.type === 'offer' && !player.isSFU() && player.whoSendsOffer === WhoSendsOffer.Streamer &&
+				players.get(playerId) === player && player.ws.readyState === WebSocket.OPEN &&
+				player.streamerId === source.id && streamers.get(source.id) === source && source.ws.readyState === WebSocket.OPEN) {
+				player.negotiatedStreamer = source;
+				clearOfferWaitTimer(playerId);
+			}
+		});
 	}
 }
 
@@ -1382,6 +1484,10 @@ function onSFUMessageStartStreaming(sfuPlayer, msg) {
 	}
 
 	registerStreamer(sfuStreamerComponent.id, sfuStreamerComponent);
+	// SFU can publish media without a UE offer addressed to a browser. Use the
+	// work-order fallback only while its subscribed, registered UE is open.
+	const ue = streamers.get(sfuPlayer.streamerId);
+	if (ue && !ue.isSFU() && ue.ws.readyState === WebSocket.OPEN) resetStartRetryStatus();
 }
 
 function onSFUMessageStopStreaming(sfuPlayer, msg) {
@@ -1417,7 +1523,7 @@ sfuMessageHandlers.set('startStreaming', onSFUMessageStartStreaming);
 sfuMessageHandlers.set('stopStreaming', onSFUMessageStopStreaming);
 
 console.logColor(logging.Green, `WebSocket listening for SFU connections on :${sfuPort}`);
-let sfuServer = new WebSocket.Server({ port: sfuPort });
+let sfuServer = new WebSocket.Server({ port: sfuPort, maxPayload: config.MaxWebSocketPayloadBytes });
 sfuServer.on('connection', function (ws, req) {
 
 	let playerId = sanitizePlayerId(nextPlayerId++);
@@ -1523,6 +1629,19 @@ function onPlayerMessageListStreamers(player, msg) {
 	player.sendTo(reply);
 }
 
+// Preserve the production v1 forwarding body; reject unsafe mDNS assumptions
+// at the ICE dispatcher while retaining the original wire payload unchanged.
+function forwardPlayerIceMessage(player, msg) {
+	const candidate = msg.candidate?.candidate;
+	const address = player.ws?._socket?.remoteAddress;
+	if (typeof candidate !== 'string' || typeof address !== 'string' || !address) {
+		logForward(player.id, player.streamerId, msg);
+		player.sendFrom(msg);
+		return;
+	}
+	forwardPlayerMessage(player, msg);
+}
+
 function forwardPlayerMessage(player, msg) {
 	// mDNS(.local) ICE candidate 필터링
 	// Chrome 등 최신 브라우저가 프라이버시 보호로 .local 주소를 보내는데
@@ -1563,17 +1682,22 @@ playerMessageHandlers.set('unsubscribe', onPlayerMessageUnsubscribe);
 playerMessageHandlers.set('stats', onPlayerMessageStats);
 playerMessageHandlers.set('offer', forwardPlayerMessage);
 playerMessageHandlers.set('answer', forwardPlayerMessage);
-playerMessageHandlers.set('iceCandidate', forwardPlayerMessage);
+playerMessageHandlers.set('iceCandidate', forwardPlayerIceMessage);
 playerMessageHandlers.set('listStreamers', onPlayerMessageListStreamers);
 // sfu related messages
 playerMessageHandlers.set('dataChannelRequest', forwardPlayerMessage);
 playerMessageHandlers.set('peerDataChannelsReady', forwardPlayerMessage);
 
 console.logColor(logging.Green, `WebSocket listening for Players connections on :${httpPort}`);
-let playerServer = new WebSocket.Server({ server: config.UseHTTPS ? https : http});
+let playerServer = new WebSocket.Server({ server: config.UseHTTPS ? https : http, maxPayload: config.MaxWebSocketPayloadBytes });
 playerServer.on('connection', function (ws, req) {
-	var url = require('url');
-	const parsedUrl = url.parse(req.url);
+	let parsedUrl;
+	try { parsedUrl = new URL(req.url, 'http://localhost'); }
+	catch {
+		console.warn('Invalid player request URL (value omitted).');
+		ws.close(1008, 'Invalid request URL');
+		return;
+	}
 	const urlParams = new URLSearchParams(parsedUrl.search);
 	const whoSendsOffer = urlParams.has('OfferToReceive') && urlParams.get('OfferToReceive') !== 'false' ? WhoSendsOffer.Browser : WhoSendsOffer.Streamer;
 	if (appCommandRunner.isBlocked()) {
@@ -1593,8 +1717,11 @@ playerServer.on('connection', function (ws, req) {
 	console.logColor(logging.Green, `player ${playerId} (${req.connection.remoteAddress}) connected`);
 	let player = new Player(playerId, ws, PlayerType.Regular, whoSendsOffer);
 	players.set(playerId, player);
+	v3.monitorPlayerSocket(ws, config.PlayerKeepaliveTimeoutMs, { setInterval, clearInterval,
+		onTimeout: () => console.warn(`[PLAYER] keepalive timeout: ${playerId}`) });
 
 	// 추가 - 플레이어 접속 시 3D 앱 실행
+	resetStopRetryStatus();
 	resetIdleTimer();
 	startApp();
 	
@@ -1974,6 +2101,12 @@ setInterval(() => {
 	console.logColor(logging.Cyan,
 		`[${new Date().toISOString()}] HEARTBEAT | Streamers: ${streamers.size} | Players: ${players.size} | Browsers: ${browserPlayerCount()} | UE ping: ${getStreamerHealth().state} | Uptime: ${uptimeStr} | 유휴: ${idleStr}`
 	);
+	if (stopRetryStatus.state === 'exhausted') {
+		console.warn(`[HEARTBEAT] STOP retries exhausted (${stopRetryStatus.attempts}); operator inspection required`);
+	}
+	if (startRetryStatus.state === 'exhausted') {
+		console.warn(`[HEARTBEAT] START budget exhausted (${startRetryStatus.attempts}); next slow retry: ${startRetryStatus.nextRetryAt || 'disabled'}`);
+	}
 	if (streamers.size > 0) {
 		for (let [id, streamer] of streamers) {
 			console.logColor(logging.Cyan, `- Streamer: ${id} | wsState: ${streamer.ws.readyState} (1=OPEN, 3=CLOSED)`);
