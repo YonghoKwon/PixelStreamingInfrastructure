@@ -1183,6 +1183,13 @@ function registerStreamer(id, streamer) {
 		lastStreamerRegistrationTime = Date.now();
 		lastStreamerPingTime = null; // Do not inherit the replaced connection's ping timestamp.
 		startStreamerWatchdog();
+		// A standalone UE owns a fresh idle window. Never reopen bounded STOP retries.
+		if (browserPlayerCount() === 0 && config.AppIdleTimeoutMs > 0 &&
+			appCommandInProgress !== STOP_CMD && !appCommandRunner.isBlocked() &&
+			!zombieRestartInProgress && !stopRetryTimer && stopRetryStatus.state !== 'exhausted') {
+			console.log('[APP] 브라우저 없이 3D 연결 → 유휴 타이머 시작');
+			startIdleTimer();
+		}
 	}
 	if (!streamer.isSFU()) appStartTime = null;  // Only the UE registration completes app startup.
 	if (!streamer.isSFU()) appCommandRunner.noteRegistered();
@@ -1254,13 +1261,14 @@ function onStreamerDisconnected(streamer) {
 	}
 	disconnectAllPlayers(streamer.id);
 	streamers.delete(streamer.id);
-	if (appStreamerCount() === 0) resetStopRetryStatus();
 	
 	// 스트리머가 끊기면 appRunning 상태 재동기화
 	if (appStreamerCount() === 0) {
 		if (streamerGoneTimerId) clearTimeout(streamerGoneTimerId);  // 기존 타이머 중복 방지
 		streamerGoneTimerId = setTimeout(() => {
 			streamerGoneTimerId = null;
+			// A short reconnect is not evidence that an exhausted STOP succeeded.
+			if (appStreamerCount() === 0) resetStopRetryStatus();
 			if (appStreamerCount() === 0 && !zombieRestartInProgress && !appCommandInProgress) {  // 좀비 재시작 중이면 덮어쓰지 않음
 				appRunning = false;
 				appStartTime = null;  // 추가
