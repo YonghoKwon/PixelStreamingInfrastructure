@@ -16,8 +16,10 @@ test('M(b): UE registered at minute 9 survives server minute 10 and stops at min
 });
 
 test('M(c): three viewers present at UE registration defer idle until the last departure',()=>{
-    const h=createHarness();const p=[h.player(),h.player(),h.player()];h.complete();h.streamer();
-    assert.equal(h.run('idleTimerStartTime'),null);h.advance(180000);
+    const h=createHarness();const p=[h.player(),h.player(),h.player()];h.complete();const ue=h.streamer();
+    assert.equal(h.run('idleTimerStartTime'),null);h.advance(1000);
+    for(const viewer of p)ue.message({type:'offer',playerId:h.playerId(viewer),sdp:'v=0'});
+    h.advance(179000);
     p[0].finishClose();p[1].finishClose();assert.equal(h.run('idleTimerStartTime'),null);
     p[2].finishClose();assert.equal(h.run('idleTimerStartTime'),1180000);
     h.advance(599999);assert.equal(stops(h).length,0);h.advance(1);assert.equal(stops(h).length,1);

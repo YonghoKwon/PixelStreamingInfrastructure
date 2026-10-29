@@ -66,7 +66,11 @@ for(const autoStart of [true,false]) {
         assert.equal(h.count(),2);assert.equal(a.readyState,1);assert.equal(b.readyState,1);
         assert.equal(h.run('stopRetryStatus.state'),'idle');
         assert.equal(starts(h).length,autoStart?1:0);
-        if(autoStart)h.complete();h.streamer();h.advance(120000);
+        if(autoStart){
+            h.complete();const replacement=h.streamer();h.advance(1000);
+            for(const viewer of[a,b])replacement.message({type:'offer',playerId:h.playerId(viewer),sdp:'v=0'});
+            h.advance(119000);
+        }else{h.streamer();h.advance(120000);}
         assert.equal(starts(h).length,autoStart?1:0);assert.equal(stops(h).length,5);
         assert.equal(h.run('idleTimerStartTime'),null);
     });
