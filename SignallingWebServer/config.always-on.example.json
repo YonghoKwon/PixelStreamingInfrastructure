@@ -1,0 +1,26 @@
+{
+    "UseFrontend":  false,
+    "UseMatchmaker":  false,
+    "UseHTTPS":  false,
+    "UseAuthentication":  false,
+    "LogToFile":  true,
+    "LogVerbose":  true,
+    "HomepageFile":  "player.html",
+    "AdditionalRoutes":  {
+
+                         },
+    "EnableWebserver":  true,
+    "MatchmakerAddress":  "",
+    "MatchmakerPort":  9999,
+    "PublicIp":  "localhost",
+    "HttpPort":  80,
+    "HttpsPort":  443,
+    "StreamerPort":  8888,
+    "SFUPort":  8889,
+    "MaxPlayerCount":  -1,
+    "_운영모드":  "상시 운영 - 3D는 외부 감시 스크립트가 관리 (cirrus는 켜지도 끄지도 않음)",
+    "_설명_AppIdleTimeoutMs":  "무접속 자동 종료(ms). 기본 600000=10분, 0=종료 안 함",
+    "_설명_AppAutoStart":  "true=화면 접속 시 cirrus가 3D 기동, false=cirrus가 3D를 켜지 않음",
+    "AppIdleTimeoutMs":  0,
+    "AppAutoStart":  false
+}

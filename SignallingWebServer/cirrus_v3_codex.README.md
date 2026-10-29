@@ -12,6 +12,57 @@ node cirrus_v3_codex.js --configFile ./config.json
 
 설정 우선순위는 기본값 < JSON 파일 < CLI다. v3는 설정 파일을 자동 생성하거나 덮어쓰지 않는다. 누락 시 메모리 기본값을 사용하고 잘못된 JSON/신규 옵션 값은 내용을 로그에 출력하지 않고 기동 실패로 처리한다.
 
+## 서버별 3D 기동·종료 설정
+
+같은 v3 코드에 서버별 JSON 설정을 적용한다. 배포 시 `cirrus_v3_codex.js`를
+`cirrus.js`로 복사하고 `modules/cirrus-v3-support.js`도 함께 배치한다.
+`--configFile`로 지정한 파일을 읽으며, 생략하면 진입점 옆 `config.json`을 읽는다.
+아래 예시는 기존 설정의 복사용 예시이며 실제 `config.json`을 자동 변경하지 않는다.
+복사한 파일의 포트·주소·HTTPS 등은 해당 서버 환경에 맞게 설정한다.
+
+| 서버 유형 | 예시 파일 | AppAutoStart | AppIdleTimeoutMs | 관리 방식 |
+| --- | --- | --- | --- | --- |
+| 기존 접속 시 기동 서버 | `config.on-demand.example.json` | `true` (생략 가능) | `600000` (생략 가능) | 첫 접속 시 기동. 마지막 브라우저 퇴장 또는 브라우저 없는 UE 등록부터 10분 후 종료. |
+| 외부 감시로 상시 운영 | `config.always-on.example.json` | `false` | `0` | cirrus는 START도 유휴 STOP도 실행하지 않음. 외부 작업이 3D를 관리. |
+| 외부 기동 + 유휴 종료 | on-demand 예시에서 두 값 변경 | `false` | `60000` 이상 | 외부가 켠 3D를 cirrus가 무접속 시간 경과 후 종료. 시작 시 경고를 표시. |
+
+```sh
+node cirrus.js --configFile ./config.always-on.example.json
+node cirrus.js --configFile ./config.on-demand.example.json --AppAutoStart=false
+```
+
+`AppIdleTimeoutMs`는 `0` 또는 정수 `60000..86400000`(1분..24시간),
+`AppAutoStart`는 JSON boolean만 허용한다. CLI에서는 `--AppAutoStart=false` 및
+`--AppAutoStart=true`도 지원한다. 범위 밖, 문자열 숫자, 임의 문자열 등은
+`INVALID_CONFIG`로 기동을 거부하고 입력값은 오류에 출력하지 않는다.
+
+JSON은 `JSON.parse`로 읽으므로 `//`나 `/* */` 주석을 넣을 수 없다.
+대신 예시의 `_운영모드`, `_설명_AppIdleTimeoutMs`, `_설명_AppAutoStart`처럼
+`_`로 시작하는 설명 필드를 쓴다. 설명 필드는 동작에 사용하지 않는다.
+설명 이름·내용에는 로그가 민감 정보로 가리는 단어를 넣지 않는다.
+
+상시 운영 서버에서 매일 재기동할 때는 외부 작업이 3D만 종료·기동한다.
+cirrus는 계속 실행하며, 대기 브라우저가 있어도 5초 확인·90초 등록 감시·느린 재시도에서
+START를 실행하지 않는다. 3D가 없을 때 새로 연결한 브라우저 소켓은 대기 상태를 유지한다.
+기존 UE 단절 시 구독한 브라우저를 닫아 재접속을 유도하는 정책은 유지한다.
+UE가 다시 등록되면 대기 브라우저들에 `streamerList`를 보내고, 각 클라이언트의
+`subscribe` 요청에 따라 offer 협상을 진행한다. 다중 브라우저를 서버에서 강제로
+자동 구독시키는 변경은 포함하지 않는다. 실제 영상 복귀는 별도 실측 대상이다.
+offer가 20초 동안 오지 않으면 해당 브라우저만 기존 close 방식으로 닫고
+다른 시청자·UE 소켓을 유지한다. 외부 감시 대상임을 원인별 1회 경고한다.
+
+`/healthz`에 `lifecycle: { autoStart, idleTimeoutMs }`가 추가되며 `/readyz` 판정은 유지한다.
+시작 로그와 HEARTBEAT에 모드를 표시하고, 유휴 자동 종료가 꺼져 있으면
+유휴 칸에 `자동 종료 꺼짐`을 표시한다. STOP 재시도 표시는 유지한다.
+
+단독 기동 UE도 등록 시점부터 유휴 시간을 새로 센다. SFU·STOP 명령 실행 중·런처 차단·
+좀비 재시작·STOP 재시도 진행 중·STOP 소진 상태에서는 등록으로 유휴 타이머를 재시작하지 않는다.
+STOP은 기존 최초 1회와 15초 간격 재시도 최대 4회만 실행하며 추가 kill 정책은 없다.
+소진 상태는 새 브라우저 접속, 재시도 루프의 완전 종료 확인, 또는 UE가 없는 상태의
+5초 확인에서 해제한다. 5초 내 UE가 재등록되면 소진 상태를 유지한다.
+이 마지막 5초 정책(R2)은 기존 즉시 해제 회귀 테스트와 충돌하여 사용자 결정 대기 중이다.
+기존 기대값은 수정하지 않았으며 이 상태에서는 G2 전체 통과가 아니다.
+
 ## 적용한 수정
 
 - 시작 설정, 문자열화된 ICE 설정, 메시지, 오류의 민감 필드와 알려진 설정 비밀값을 로그에서 가린다. SDP의 ICE password/ufrag와 일반적인 URL 인증정보도 가린다. 전송 데이터는 원래 값을 유지한다. 콘솔과 파일 logger로 전달되기 전에 처리한다.
