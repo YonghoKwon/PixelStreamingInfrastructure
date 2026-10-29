@@ -1213,6 +1213,7 @@ function registerStreamer(id, streamer) {
 		lastStreamerPingTime = null; // Do not inherit the replaced connection's ping timestamp.
 		startStreamerWatchdog();
 		if (browserPlayerCount() === 0 && config.AppIdleTimeoutMs > 0 &&
+			!stopRetryTimer && stopRetryStatus.state !== 'exhausted' &&
 			appCommandInProgress !== STOP_CMD && !appCommandRunner.isBlocked() && !zombieRestartInProgress) {
 			console.log('[APP] 브라우저 없이 3D 연결 → 유휴 타이머 시작');
 			startIdleTimer(); // A standalone UE gets its full configured grace from registration.
