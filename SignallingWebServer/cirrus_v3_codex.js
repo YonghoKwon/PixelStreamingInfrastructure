@@ -158,6 +158,8 @@ function stopStreamerWatchdog() {
 	
 // Command line argument --configFile needs to be checked before loading the config, all other command line arguments are dealt with through the config object
 
+// Preserve the shared default; every lifecycle timer/log uses the validated setting.
+const APP_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
 const defaultConfig = {
 	UseFrontend: false,
 	UseMatchmaker: false,
@@ -187,7 +189,9 @@ const defaultConfig = {
 	MaxWebSocketPayloadBytes: 4 * 1024 * 1024,
 	AppStartMaxAttempts: 3,
 	PlayerKeepaliveTimeoutMs: 30000,
-	AppStartCooldownMs: 600000
+	AppStartCooldownMs: 600000,
+	AppIdleTimeoutMs: APP_IDLE_TIMEOUT_MS,
+	AppAutoStart: true
 };
 
 const argv = require('yargs').argv;
@@ -361,8 +365,9 @@ sendGameSessionData();
 //
 const { spawn } = require('child_process');
 
-// const APP_IDLE_TIMEOUT_MS = 60 * 1000; // 무접속 1분 후 종료 (테스트용 짧은 시간)
-const APP_IDLE_TIMEOUT_MS = 10 * 60 * 1000;  // 무접속 10분 후 종료
+if (!config.AppAutoStart && config.AppIdleTimeoutMs > 0) {
+	console.warn('[APP] AppAutoStart=false + AppIdleTimeoutMs>0: 외부가 켠 3D도 유휴 시 종료합니다.');
+}
 //
 // OS 자동 감지 - Linux / Windows 모두 대응
 //
@@ -599,7 +604,7 @@ function stopApp(forceStop = false) {
 		return;
 	}
 	if (!appRunning && !appStopPending && !forceStop) return;
-	console.logColor(logging.Orange, `[APP] 유휴 ${APP_IDLE_TIMEOUT_MS / 60000}분 경과 → 3D 앱 종료`);
+	console.logColor(logging.Orange, `[APP] 유휴 ${config.AppIdleTimeoutMs / 60000}분 경과 → 3D 앱 종료`);
 	
 	// STOP_CMD 실행 (BAT/sh)
 	runAppCommand(STOP_CMD, (err) => {
@@ -667,13 +672,13 @@ function resetIdleTimer() {
 function startIdleTimer() {
 	resetIdleTimer();
 	idleTimerStartTime = Date.now();  // 추가
-	console.logColor(logging.Yellow, `[APP] 유휴 타이머 시작 (${APP_IDLE_TIMEOUT_MS / 60000}분 후 종료)`);
+	console.logColor(logging.Yellow, `[APP] 유휴 타이머 시작 (${config.AppIdleTimeoutMs / 60000}분 후 종료)`);
 	idleTimer = setTimeout(() => {
 		if (browserPlayerCount() === 0) {
 			resetStartRetryStatus();
 			stopApp();
 		}
-	}, APP_IDLE_TIMEOUT_MS);
+	}, config.AppIdleTimeoutMs);
 }
 
 // set up rate limiter: maximum of five requests per minute
@@ -2087,7 +2092,7 @@ setInterval(() => {
 		idleStr = `종료 재시도 중 (스트리머 ${streamers.size}개 남음)`;		
 	} else if (idleTimerStartTime) {
 		const idleElapsedSec = Math.floor((Date.now() - idleTimerStartTime) / 1000);
-		const idleLimitSec = Math.floor(APP_IDLE_TIMEOUT_MS / 1000);
+		const idleLimitSec = Math.floor(config.AppIdleTimeoutMs / 1000);
 		const remainSec = Math.max(0, idleLimitSec - idleElapsedSec);
 		const em = Math.floor(idleElapsedSec / 60);
 		const es = idleElapsedSec % 60;
