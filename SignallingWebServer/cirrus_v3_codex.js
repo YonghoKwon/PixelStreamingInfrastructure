@@ -1240,21 +1240,21 @@ function registerStreamer(id, streamer) {
 			try { p.sendTo(listMsg); } catch (e) {}
 		});
 		
-		// [추가] 대기 중인 플레이어가 1명이고 스트리머도 1개면 자동 subscribe 시도
-		// 클라이언트가 listStreamers 재시도 대신 포기하는 경우를 서버에서 보완
-		if (waitingPlayers.length === 1 && streamers.size === 1) {
-			const soloPlayer = waitingPlayers[0];
-			const soloStreamerId = ids[0];
-			setTimeout(() => {
-				// 1초 후 아직 구독 안 됐으면 서버에서 직접 subscribe 처리
-				const currentPlayer = players.get(soloPlayer.id);
-				if (currentPlayer && !currentPlayer.streamerId) {
-					console.logColor(logging.Green,
-						`[STREAMER] 대기 플레이어 ${soloPlayer.id} 자동 subscribe → ${soloStreamerId}`
-					);
-					currentPlayer.subscribe(soloStreamerId);
-				}
-			}, 1000);
+		// 단일 UE 재등록 뒤 클라이언트가 subscribe를 생략해도 모든 대기자를 복구한다.
+		if (!streamer.isSFU() && streamers.size === 1) {
+			const waitingStreamerId = streamer.id;
+			waitingPlayers.forEach(waitingPlayer => {
+				setTimeout(() => {
+					const currentPlayer = players.get(waitingPlayer.id);
+					if (currentPlayer === waitingPlayer && currentPlayer.ws.readyState === WebSocket.OPEN &&
+						!currentPlayer.streamerId && streamers.size === 1 && streamers.get(waitingStreamerId) === streamer) {
+						console.logColor(logging.Green,
+							`[STREAMER] 대기 플레이어 ${waitingPlayer.id} 자동 subscribe → ${waitingStreamerId}`
+						);
+						currentPlayer.subscribe(waitingStreamerId);
+					}
+				}, 1000);
+			});
 		}
 	}
 }
