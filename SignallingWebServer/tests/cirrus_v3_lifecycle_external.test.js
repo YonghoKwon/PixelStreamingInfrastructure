@@ -98,3 +98,20 @@ test('N4: lifecycle health fields and mode heartbeat coexist with unchanged read
     assert.ok(h.logs.some(r=>r.args.join(' ').includes('HEARTBEAT')&&r.args.join(' ').includes('모드: 상시(자동기동 끔)')));
     assert.equal(h.run('getServiceStatus().mediaValidated'),false);idleBudget(h);
 });
+
+test('N peer isolation: one missed pong removes only that external-mode viewer and keeps the other two',()=>{
+    const h=createHarness(external);const ue=h.streamer();const viewers=audience(h);
+    for(const p of viewers){p.message({type:'subscribe',streamerId:'A'});ue.message({type:'offer',playerId:h.playerId(p),sdp:'v=0'});}
+    const dead=h.playerId(viewers[1]);viewers[1].autoPong=false;h.advance(60000);
+    assert.equal(viewers[1].terminateCalls,1);assert.equal(viewers[0].readyState,1);assert.equal(viewers[2].readyState,1);assert.equal(ue.readyState,1);
+    assert.deepEqual(ue.sent.filter(m=>m.type==='playerDisconnected').map(m=>m.playerId),[dead]);
+    assert.equal(h.count(),2);assert.equal(h.commands.length,0);assert.equal(h.run('idleTimerStartTime'),null);idleBudget(h);
+});
+
+test('N subscription isolation: external mode still rejects another UE offer/disconnect for three A viewers',()=>{
+    const h=createHarness(external);const a=h.streamer(),b=h.streamer('B');const viewers=audience(h);
+    for(const p of viewers){p.message({type:'subscribe',streamerId:'A'});const id=h.playerId(p),before=p.sent.length;
+        b.message({type:'offer',playerId:id,sdp:'wrong'});b.message({type:'disconnectPlayer',playerId:id,reason:'wrong'});
+        assert.equal(p.sent.length,before);assert.equal(p.readyState,1);a.message({type:'offer',playerId:id,sdp:'correct'});assert.equal(p.sent.at(-1).sdp,'correct');}
+    assert.equal(h.commands.length,0);idleBudget(h);
+});
