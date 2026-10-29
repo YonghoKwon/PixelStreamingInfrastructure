@@ -1789,6 +1789,11 @@ function forwardPlayerIceMessage(player, msg) {
 	forwardPlayerMessage(player, msg);
 }
 
+function forwardPlayerAnswer(player, msg) {
+	forwardPlayerMessage(player, msg);
+	completePlayerNegotiation(player);
+}
+
 function forwardPlayerMessage(player, msg) {
 	// mDNS(.local) ICE candidate 필터링
 	// Chrome 등 최신 브라우저가 프라이버시 보호로 .local 주소를 보내는데
@@ -1805,7 +1810,6 @@ function forwardPlayerMessage(player, msg) {
 	}
 	logForward(player.id, player.streamerId, msg);
 	player.sendFrom(msg);
-	if (msg.type === 'answer') completePlayerNegotiation(player);
 }
 
 function onPlayerDisconnected(playerId) {
@@ -1829,7 +1833,7 @@ playerMessageHandlers.set('subscribe', onPlayerMessageSubscribe);
 playerMessageHandlers.set('unsubscribe', onPlayerMessageUnsubscribe);
 playerMessageHandlers.set('stats', onPlayerMessageStats);
 playerMessageHandlers.set('offer', forwardPlayerMessage);
-playerMessageHandlers.set('answer', forwardPlayerMessage);
+playerMessageHandlers.set('answer', forwardPlayerAnswer);
 playerMessageHandlers.set('iceCandidate', forwardPlayerIceMessage);
 playerMessageHandlers.set('listStreamers', onPlayerMessageListStreamers);
 // sfu related messages
