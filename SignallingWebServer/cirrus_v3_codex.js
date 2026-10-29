@@ -1289,13 +1289,14 @@ function onStreamerDisconnected(streamer) {
 	}
 	disconnectAllPlayers(streamer.id);
 	streamers.delete(streamer.id);
-	if (appStreamerCount() === 0) resetStopRetryStatus();
 	
 	// 스트리머가 끊기면 appRunning 상태 재동기화
 	if (appStreamerCount() === 0) {
 		if (streamerGoneTimerId) clearTimeout(streamerGoneTimerId);  // 기존 타이머 중복 방지
 		streamerGoneTimerId = setTimeout(() => {
 			streamerGoneTimerId = null;
+			// A short UE reconnect must not release STOP exhaustion and re-arm idle shutdown.
+			if (appStreamerCount() === 0) resetStopRetryStatus();
 			if (appStreamerCount() === 0 && !zombieRestartInProgress && !appCommandInProgress) {  // 좀비 재시작 중이면 덮어쓰지 않음
 				appRunning = false;
 				appStartTime = null;  // 추가
