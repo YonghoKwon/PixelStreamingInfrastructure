@@ -187,6 +187,11 @@ Node **v24.22.1**의 공식 Linux x64 `.tar.gz`를 받으며 `tar -xzf`로 푼�
 2026-10-28 HEAD 확인에서 같은 버전의 `.tar.gz`/`.tar.xz` 모두 HTTP 200이었다.
 이 변경에서는 `.tar.gz`를 사용하므로 xz 의존성을 추가하지 않았다.
 
+실제 UBI8 설치 검사에서는 기존 shell 파일의 CRLF를 **Linux 배포 복사본에서만 LF로 정규화**했다.
+보호 대상 `common_utils.sh` 원본은 수정하지 않았다. 기존 설치 스크립트의 coturn 자동 설치는
+apt 계열을 전제하므로 RHEL8/UBI에는 coturn을 미리 설치해야 한다. 검사 이미지는 EPEL의 실제 coturn
+패키지를 준비한 뒤 세 setup.sh 전체를 실행했고 각각 v24.22.1과 기존 Node 폴더 재사용을 확인했다.
+
 기존 `platform_scripts/bash/node` 디렉터리가 있으면 설치를 건너뛴다.
 업그레이드할 때는 해당 서비스를 정상 종료하고, 해당 컴포넌트의 `node` 폴더를
 백업 이름으로 바꾼 뒤 `setup.sh`를 실행한다. 새 `node/bin/node --version`이
