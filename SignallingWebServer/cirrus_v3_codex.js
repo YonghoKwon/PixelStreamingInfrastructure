@@ -196,7 +196,8 @@ const defaultConfig = {
 	PlayerKeepaliveTimeoutMs: 30000,
 	AppStartCooldownMs: 600000,
 	AppIdleTimeoutMs: APP_IDLE_TIMEOUT_MS,
-	AppAutoStart: true
+	AppAutoStart: true,
+	PlayerNegotiationGapMs: 1000
 };
 
 const argv = require('yargs').argv;
@@ -957,6 +958,105 @@ class Streamer {
 	}
 }
 
+const playerNegotiations = new Map();
+const PLAYER_NEGOTIATION_TIMEOUT_MS = 20000;
+
+function validPlayerNegotiation(entry) {
+	return players.get(entry.player.id) === entry.player && entry.player.ws.readyState === WebSocket.OPEN &&
+		entry.player.streamerId === entry.streamer.id && streamers.get(entry.streamer.id) === entry.streamer &&
+		entry.streamer.ws.readyState === WebSocket.OPEN;
+}
+
+function releasePlayerNegotiation(slot, entry) {
+	if (slot.active !== entry) return;
+	clearTimeout(entry.timer);
+	if (entry.player.negotiationEntry === entry) delete entry.player.negotiationEntry;
+	slot.active = null;
+	drainPlayerNegotiations(slot);
+}
+
+function drainPlayerNegotiations(slot) {
+	if (playerNegotiations.get(slot.streamer) !== slot || slot.active) return;
+	let entry;
+	while ((entry = slot.waiting.shift())) {
+		if (!validPlayerNegotiation(entry)) {
+			if (entry.player.negotiationEntry === entry) delete entry.player.negotiationEntry;
+			continue;
+		}
+		slot.active = entry;
+		entry.sent = true;
+		entry.startedAt = Date.now();
+		delete entry.player.pendingPlayerConnection;
+		entry.timer = setTimeout(() => releasePlayerNegotiation(slot, entry), PLAYER_NEGOTIATION_TIMEOUT_MS);
+		logOutgoing(entry.streamer.id, entry.message);
+		entry.player.sendFrom(entry.message);
+		startOfferWaitTimer(entry.player.id, entry.streamer.id);
+		return;
+	}
+	playerNegotiations.delete(slot.streamer);
+}
+
+function enqueuePlayerNegotiation(player, message) {
+	const streamer = streamers.get(player.streamerId);
+	if (config.PlayerNegotiationGapMs === 0 || player.isSFU() || player.whoSendsOffer !== WhoSendsOffer.Streamer ||
+		!streamer || streamer.isSFU()) return false;
+	let slot = playerNegotiations.get(streamer);
+	if (!slot) {
+		slot = { streamer, active: null, waiting: [], drainTimer: null };
+		playerNegotiations.set(streamer, slot);
+	}
+	const entry = { player, streamer, message, sent: false, answered: false, timer: null };
+	player.negotiationEntry = entry;
+	player.pendingPlayerConnection = true;
+	slot.waiting.push(entry);
+	drainPlayerNegotiations(slot);
+	return true;
+}
+
+function completePlayerNegotiation(player) {
+	const entry = player.negotiationEntry;
+	const slot = entry && playerNegotiations.get(entry.streamer);
+	if (!slot || slot.active !== entry || entry.answered || !validPlayerNegotiation(entry)) return;
+	entry.answered = true;
+	clearTimeout(entry.timer);
+	const remaining = Math.max(0, PLAYER_NEGOTIATION_TIMEOUT_MS - (Date.now() - entry.startedAt));
+	entry.timer = setTimeout(() => releasePlayerNegotiation(slot, entry), Math.min(config.PlayerNegotiationGapMs, remaining));
+}
+
+function cancelPlayerNegotiation(player) {
+	const wasQueued = player.pendingPlayerConnection === true;
+	delete player.pendingPlayerConnection;
+	const entry = player.negotiationEntry;
+	delete player.negotiationEntry;
+	const slot = entry && playerNegotiations.get(entry.streamer);
+	if (!slot) return wasQueued;
+	slot.waiting = slot.waiting.filter(item => item !== entry);
+	if (slot.active === entry && !entry.answered) {
+		clearTimeout(entry.timer);
+		slot.active = null;
+		// Let unsubscribe send playerDisconnected before announcing the next peer.
+		slot.drainTimer = setTimeout(() => { slot.drainTimer = null; drainPlayerNegotiations(slot); }, 0);
+	} else if (!slot.active && !slot.waiting.length) {
+		clearTimeout(slot.drainTimer);
+		playerNegotiations.delete(slot.streamer);
+	}
+	return wasQueued;
+}
+
+function clearStreamerNegotiations(streamer) {
+	const slot = playerNegotiations.get(streamer);
+	if (!slot) return;
+	clearTimeout(slot.drainTimer);
+	for (const entry of [slot.active, ...slot.waiting]) {
+		if (!entry) continue;
+		clearTimeout(entry.timer);
+		if (entry.player.negotiationEntry === entry) delete entry.player.negotiationEntry;
+	}
+	slot.waiting = [];
+	slot.active = null;
+	playerNegotiations.delete(streamer);
+}
+
 const PlayerType = { Regular: 0, SFU: 1 };
 const WhoSendsOffer = { Streamer: 0, Browser: 1 };
 
@@ -985,6 +1085,7 @@ class Player {
 			streamer.addSFUPlayer(this.id);
 		}
 		const msg = { type: 'playerConnected', playerId: this.id, dataChannel: true, sfu: this.type == PlayerType.SFU, sendOffer: this.whoSendsOffer == WhoSendsOffer.Streamer };
+		if (enqueuePlayerNegotiation(this, msg)) return;
 		logOutgoing(this.streamerId, msg);
 		this.sendFrom(msg);
 		
@@ -995,6 +1096,7 @@ class Player {
 	}
 
 	unsubscribe() {
+		const connectionWasQueued = cancelPlayerNegotiation(this);
 		delete this.negotiatedStreamer;
 		clearOfferWaitTimer(this.id);
 		if (this.streamerId && streamers.has(this.streamerId)) {
@@ -1007,8 +1109,10 @@ class Player {
 				}
 			}
 			const msg = { type: 'playerDisconnected', playerId: this.id };
-			logOutgoing(this.streamerId, msg);
-			this.sendFrom(msg);
+			if (!connectionWasQueued) {
+				logOutgoing(this.streamerId, msg);
+				this.sendFrom(msg);
+			}
 		}
 		this.streamerId = null;
 	}
@@ -1193,6 +1297,7 @@ function registerStreamer(id, streamer) {
 	// (재시작 시 238-1_2 같은 중복 스트리머 생성 방지)
 	if (streamers.has(id)) {
 		const oldStreamer = streamers.get(id);
+		clearStreamerNegotiations(oldStreamer);
 		console.logColor(logging.Orange, `[STREAMER] "${id}" 재연결 감지 → 기존 스트리머 종료 후 새 연결로 교체`);
 		// 기존 스트리머에 연결된 플레이어들 해제 (재연결 유도)
 		disconnectAllPlayers(id);
@@ -1287,6 +1392,7 @@ function onStreamerDisconnected(streamer) {
 		sfuPlayer.sendTo(msg);
 		disconnectAllPlayers(sfuPlayer.id);
 	}
+	clearStreamerNegotiations(streamer);
 	disconnectAllPlayers(streamer.id);
 	streamers.delete(streamer.id);
 	
@@ -1699,6 +1805,7 @@ function forwardPlayerMessage(player, msg) {
 	}
 	logForward(player.id, player.streamerId, msg);
 	player.sendFrom(msg);
+	if (msg.type === 'answer') completePlayerNegotiation(player);
 }
 
 function onPlayerDisconnected(playerId) {

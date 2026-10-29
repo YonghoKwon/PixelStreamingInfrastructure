@@ -1,5 +1,27 @@
 # Cirrus v3 Codex
 
+## UE별 새 협상 직렬화 (F6)
+
+`PlayerNegotiationGapMs` 기본값은 **1000**이다. `0`은 기존 즉시 전달 동작,
+그 외에는 정수 `100..10000`만 허용한다. 설정 변경은 Cirrus 재기동 후 적용한다.
+두 예시 config에 같은 값과 `_설명_PlayerNegotiationGapMs`를 포함했다.
+
+같은 UE에 새 플레이어의 `playerConnected`를 한 번에 하나씩 전달한다.
+그 플레이어의 answer를 UE에 전달한 뒤 설정된 간격이 지나야 다음을 보낸다.
+한 협상의 answer/간격 대기는 실제 전달부터 최대 20초다. 응답이 없거나 늦게 도착해도
+그 상한을 넘기지 않고 다음 순서로 진행한다.
+offer 20초 대기 타이머는 큐에 들어간 때가 아니라 실제 `playerConnected` 전달 때 시작한다.
+이미 시청 중인 사람의 협상이나 영상에는 손대지 않는다.
+
+큐에서 나간 브라우저는 제거하고, UE 단절/교체 시 해당 인스턴스의 큐와 타이머를 정리한다.
+SFU 및 `OfferToReceive`(브라우저가 offer를 만드는 모드)는 기존 즉시 전달 경로다.
+K의 정상 시청자 보호, J의 구독 검사, I의 keepalive와 F7a의 전원 자동 구독은 유지한다.
+
+기준 소프트웨어 경유 Linux 환경에서 실패측은 ICE/DTLS connected지만 video RTP 통계가
+없고 video track이 muted였다. 500ms는 cold 4/5로 미달했고, 1000ms 외부 사본은
+cold 5/5·상시 재기동 5/5·3명 cold 1회에서 전원 15초 내 영상과 지속 수신을 확인했다.
+이는 해당 WSL Dozen/CPU bridge 환경의 완화 근거이며 운영 GPU 서버 수용을 대신하지 않는다.
+
 `cirrus_v3_codex.js`는 v2를 보존한 별도 진입점이다. 함께 추가된 `modules/cirrus-v3-support.js`가 필요하다. 기존 `cirrus.js`, v1, v2, 공통 config/logging 모듈, npm 시작 스크립트는 변경하지 않는다.
 
 ## 실행
