@@ -85,6 +85,14 @@ test('F6: SFU players and browser-offer viewers keep their existing immediate pa
     assert.equal(connected(ue).length,3);assert.equal(h.run('playerNegotiations.size'),0);assert.equal(h.run('offerWaitTimers.size'),0);
 });
 
+test('F6: keepalive removes only a non-pong queued viewer without disturbing the active or next viewer',()=>{
+    const h=createHarness({AppAutoStart:false,AppIdleTimeoutMs:0,PlayerNegotiationGapMs:1000,PlayerKeepaliveTimeoutMs:5000},{realClosingSend:true});
+    const ue=h.streamer(),[a,b,c]=audience(h);[a,b,c].forEach(subscribe);offer(h,ue,a);b.autoPong=false;
+    h.advance(10000);assert.equal(b.readyState,3);assert.equal(a.readyState,1);assert.equal(c.readyState,1);
+    answer(a);h.advance(1000);assert.deepEqual(connected(ue).map(m=>m.playerId),[h.playerId(a),h.playerId(c)]);
+    assert.equal(ue.readyState,1);assert.equal(h.commands.length,0);
+});
+
 test('F6: configuration defaults, zero and integer boundaries validate without changing two-viewer admission',()=>{
     const defaults={HttpMode:'web',AppCommandTimeoutMs:60000,AppCommandKillGraceMs:5000,AppCommandMaxTimeouts:3};
     const load=value=>loadConfig('fixture',defaults,{}, {readFileSync:()=>JSON.stringify(value)});
