@@ -22,5 +22,7 @@
     "_설명_AppIdleTimeoutMs":  "무접속 자동 종료(ms). 기본 600000=10분, 0=종료 안 함",
     "_설명_AppAutoStart":  "true=화면 접속 시 cirrus가 3D 기동, false=cirrus가 3D를 켜지 않음",
     "AppIdleTimeoutMs":  600000,
-    "AppAutoStart":  true
+    "AppAutoStart":  true,
+    "PlayerNegotiationGapMs":  1000,
+    "_설명_PlayerNegotiationGapMs":  "UE별 새 영상 협상 대기 간격(ms). 기본 1000, 0=즉시 전송, 정수 100..10000"
 }
