@@ -4,7 +4,7 @@ const alwaysOn = require('../config.always-on.example.json');
 const { createHarness } = require('./helpers/cirrus-v3-harness');
 
 function harness(autoStart = false) {
-    return createHarness({ ...alwaysOn, AppAutoStart: autoStart }, { autoOffer: true, closedSendCallback: true });
+    return createHarness({ ...alwaysOn, AppAutoStart: autoStart, PlayerNegotiationGapMs: 0 }, { autoOffer: true, closedSendCallback: true });
 }
 function viewers(h, n = 3) {
     const people = Array.from({ length: n }, () => h.player());
