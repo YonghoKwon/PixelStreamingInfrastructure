@@ -34,6 +34,10 @@ function startOfferWaitTimer(playerId, streamerId) {
 		if (!player || player !== expectedPlayer || player.ws.readyState !== WebSocket.OPEN ||
 			player.streamerId !== streamerId || streamers.get(streamerId) !== expectedStreamer ||
 			!expectedStreamer || expectedStreamer.ws.readyState !== WebSocket.OPEN) return;
+		if (autoStartDisabled('offer-timeout')) {
+			player.ws.close(); // K policy: only this viewer; external supervision owns the UE.
+			return;
+		}
 		if (zombieRestartInProgress || appCommandInProgress || appCommandRunner.isBlocked()) {
 			startOfferWaitTimer(playerId, streamerId); // Defer this same check; never overlap a command.
 			return;
@@ -132,6 +136,7 @@ function startStreamerWatchdog() {
 		if (appStreamerCount() === 0 && appStartTime) {
 			const elapsed = Date.now() - appStartTime;
 			if (elapsed > APP_START_TIMEOUT_MS) {
+				if (autoStartDisabled('registration-watchdog')) return;
 				console.logColor(logging.Red,
 					`[WATCHDOG] 앱 시작 후 ${Math.floor(elapsed/1000)}초 경과 but 스트리머 미연결 → appRunning 리셋 후 재시작 시도`
 				);
@@ -158,6 +163,8 @@ function stopStreamerWatchdog() {
 	
 // Command line argument --configFile needs to be checked before loading the config, all other command line arguments are dealt with through the config object
 
+// Preserve the shared default; every lifecycle timer/log uses the validated setting.
+const APP_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
 const defaultConfig = {
 	UseFrontend: false,
 	UseMatchmaker: false,
@@ -187,7 +194,9 @@ const defaultConfig = {
 	MaxWebSocketPayloadBytes: 4 * 1024 * 1024,
 	AppStartMaxAttempts: 3,
 	PlayerKeepaliveTimeoutMs: 30000,
-	AppStartCooldownMs: 600000
+	AppStartCooldownMs: 600000,
+	AppIdleTimeoutMs: APP_IDLE_TIMEOUT_MS,
+	AppAutoStart: true
 };
 
 const argv = require('yargs').argv;
@@ -361,8 +370,9 @@ sendGameSessionData();
 //
 const { spawn } = require('child_process');
 
-// const APP_IDLE_TIMEOUT_MS = 60 * 1000; // 무접속 1분 후 종료 (테스트용 짧은 시간)
-const APP_IDLE_TIMEOUT_MS = 10 * 60 * 1000;  // 무접속 10분 후 종료
+if (!config.AppAutoStart && config.AppIdleTimeoutMs > 0) {
+	console.warn('[APP] AppAutoStart=false + AppIdleTimeoutMs>0: 외부가 켠 3D도 유휴 시 종료합니다.');
+}
 //
 // OS 자동 감지 - Linux / Windows 모두 대응
 //
@@ -385,6 +395,18 @@ const START_CMD = isWindows
 const STOP_CMD = isWindows
 	? `cmd /c "${RUN_DIR}\\Stop_${myStreamerPort}.bat"`
 	: `/dt/run.sh stop`;
+
+const lifecycleMode = config.AppAutoStart ? '접속 시 기동' : '상시(자동기동 끔)';
+const autoStartBlockedReasons = new Set();
+function autoStartDisabled(reason) {
+	if (config.AppAutoStart) return false;
+	if (!autoStartBlockedReasons.has(reason)) {
+		autoStartBlockedReasons.add(reason);
+		console.warn(`[APP] START 차단 (${reason}): AppAutoStart=false; 3D는 외부 감시 대상입니다.`);
+	}
+	return true;
+}
+console.log(`[APP] 모드: ${lifecycleMode} | AppAutoStart=${config.AppAutoStart} | AppIdleTimeoutMs=${config.AppIdleTimeoutMs}`);
 
 console.logColor(logging.Green, `[APP] OS: ${process.platform} | Port: ${myStreamerPort} | START: ${START_CMD}`);
 
@@ -420,15 +442,17 @@ function resetStartRetryStatus() {
 }
 
 function canStartApp() {
-	return startRetryStatus.attempts < config.AppStartMaxAttempts;
+	return config.AppAutoStart && startRetryStatus.attempts < config.AppStartMaxAttempts;
 }
 
 function scheduleSlowStartRetry() {
+	if (autoStartDisabled('slow-retry')) return;
 	if (startRetryTimer || startRetryStatus.state !== 'exhausted' || config.AppStartCooldownMs === 0) return;
 	startRetryStatus.nextRetryAt = new Date(Date.now() + config.AppStartCooldownMs).toISOString();
 	startRetryTimer = setTimeout(() => {
 		startRetryTimer = null;
 		startRetryStatus.nextRetryAt = null;
+		if (autoStartDisabled('slow-retry')) return;
 		if (startRetryStatus.state !== 'exhausted') return;
 		// A busy/blocked/no-demand round is skipped, never queued for an early retry.
 		scheduleSlowStartRetry();
@@ -491,6 +515,7 @@ function getStreamerHealth() {
 }
 
 function runAppCommand(command, callback, slowRetry = false) {
+	if (command === START_CMD && autoStartDisabled('command-entry')) return false;
 	if (appCommandInProgress || appCommandRunner.isBlocked()) return false;
 	if (command === START_CMD && !canStartApp() && !slowRetry) return false;
 	appCommandInProgress = command;
@@ -519,7 +544,7 @@ function runAppCommand(command, callback, slowRetry = false) {
 			}
 		}
 		if (!appCommandInProgress) {
-			if (resumeStart && hasBrowserDemand()) startApp(true);
+			if (resumeStart && hasBrowserDemand() && !autoStartDisabled('after-stop')) startApp(true);
 			else if (resumeStop && browserPlayerCount() === 0) stopApp(true);
 		}
 	};
@@ -545,6 +570,7 @@ function startApp(forceStart = false) {
 	}
 
 	stopAfterStart = false; // A new browser cancels a queued idle shutdown.
+	if (autoStartDisabled('browser-start')) return;
 	if (appCommandInProgress) {
 		if (appCommandInProgress === STOP_CMD) startAfterStop = true;
 		return;
@@ -599,7 +625,7 @@ function stopApp(forceStop = false) {
 		return;
 	}
 	if (!appRunning && !appStopPending && !forceStop) return;
-	console.logColor(logging.Orange, `[APP] 유휴 ${APP_IDLE_TIMEOUT_MS / 60000}분 경과 → 3D 앱 종료`);
+	console.logColor(logging.Orange, `[APP] 유휴 ${config.AppIdleTimeoutMs / 60000}분 경과 → 3D 앱 종료`);
 	
 	// STOP_CMD 실행 (BAT/sh)
 	runAppCommand(STOP_CMD, (err) => {
@@ -666,14 +692,15 @@ function resetIdleTimer() {
 
 function startIdleTimer() {
 	resetIdleTimer();
+	if (config.AppIdleTimeoutMs === 0) return;
 	idleTimerStartTime = Date.now();  // 추가
-	console.logColor(logging.Yellow, `[APP] 유휴 타이머 시작 (${APP_IDLE_TIMEOUT_MS / 60000}분 후 종료)`);
+	console.logColor(logging.Yellow, `[APP] 유휴 타이머 시작 (${config.AppIdleTimeoutMs / 60000}분 후 종료)`);
 	idleTimer = setTimeout(() => {
 		if (browserPlayerCount() === 0) {
 			resetStartRetryStatus();
 			stopApp();
 		}
-	}, APP_IDLE_TIMEOUT_MS);
+	}, config.AppIdleTimeoutMs);
 }
 
 // set up rate limiter: maximum of five requests per minute
@@ -693,6 +720,7 @@ function getServiceStatus() {
 	const ready = appStreamerCount(true) > 0 && !appCommandInProgress && launcher.state !== 'blocked' && !startExhausted;
 	return { status: launcher.state === 'blocked' || startExhausted || stopRetryStatus.state === 'exhausted' ? 'degraded' : ready ? 'ready' : 'waiting', ready,
 		browsers: browserPlayerCount(), ueStreamers: appStreamerCount(true), launcher,
+		lifecycle: { autoStart: config.AppAutoStart, idleTimeoutMs: config.AppIdleTimeoutMs },
 		stopRetry: { ...stopRetryStatus },
 		startRetry: { ...startRetryStatus },
 		streamerHealth: getStreamerHealth(),
@@ -1178,6 +1206,13 @@ function registerStreamer(id, streamer) {
 		lastStreamerRegistrationTime = Date.now();
 		lastStreamerPingTime = null; // Do not inherit the replaced connection's ping timestamp.
 		startStreamerWatchdog();
+		// A standalone UE owns a fresh idle window. Never reopen bounded STOP retries.
+		if (browserPlayerCount() === 0 && config.AppIdleTimeoutMs > 0 &&
+			appCommandInProgress !== STOP_CMD && !appCommandRunner.isBlocked() &&
+			!zombieRestartInProgress && !stopRetryTimer && stopRetryStatus.state !== 'exhausted') {
+			console.log('[APP] 브라우저 없이 3D 연결 → 유휴 타이머 시작');
+			startIdleTimer();
+		}
 	}
 	if (!streamer.isSFU()) appStartTime = null;  // Only the UE registration completes app startup.
 	if (!streamer.isSFU()) appCommandRunner.noteRegistered();
@@ -1249,13 +1284,14 @@ function onStreamerDisconnected(streamer) {
 	}
 	disconnectAllPlayers(streamer.id);
 	streamers.delete(streamer.id);
-	if (appStreamerCount() === 0) resetStopRetryStatus();
 	
 	// 스트리머가 끊기면 appRunning 상태 재동기화
 	if (appStreamerCount() === 0) {
 		if (streamerGoneTimerId) clearTimeout(streamerGoneTimerId);  // 기존 타이머 중복 방지
 		streamerGoneTimerId = setTimeout(() => {
 			streamerGoneTimerId = null;
+			// A short reconnect is not evidence that an exhausted STOP succeeded.
+			if (appStreamerCount() === 0) resetStopRetryStatus();
 			if (appStreamerCount() === 0 && !zombieRestartInProgress && !appCommandInProgress) {  // 좀비 재시작 중이면 덮어쓰지 않음
 				appRunning = false;
 				appStartTime = null;  // 추가
@@ -1265,7 +1301,7 @@ function onStreamerDisconnected(streamer) {
 				// 시나리오: Watch_Streamers가 프로세스 종료 → 5초 내 플레이어 재접속 →
 				// startApp()이 appRunning=true 로 스킵됨 → 5초 후 appRunning=false 전환 →
 				// 하지만 아무도 startApp() 재호출 안 함 → 앱 영구 미기동 버그 수정
-				if (hasBrowserDemand()) {
+				if (hasBrowserDemand() && !autoStartDisabled('streamer-disconnect')) {
 					console.logColor(logging.Yellow,
 						`[APP] 스트리머 종료 후 대기 플레이어 ${players.size}명 감지 → 자동 재시작`
 					);
@@ -2081,13 +2117,15 @@ setInterval(() => {
 	
 	// 유휴 타이머 경과 시간 계산
 	let idleStr = '-';
-	if (browserPlayerCount() > 0) {
+	if (config.AppIdleTimeoutMs === 0 && !stopRetryTimer) {
+		idleStr = '자동 종료 꺼짐';
+	} else if (browserPlayerCount() > 0) {
 		idleStr = '접속 중 (타이머 없음)';
 	} else if (stopRetryTimer) {
 		idleStr = `종료 재시도 중 (스트리머 ${streamers.size}개 남음)`;		
 	} else if (idleTimerStartTime) {
 		const idleElapsedSec = Math.floor((Date.now() - idleTimerStartTime) / 1000);
-		const idleLimitSec = Math.floor(APP_IDLE_TIMEOUT_MS / 1000);
+		const idleLimitSec = Math.floor(config.AppIdleTimeoutMs / 1000);
 		const remainSec = Math.max(0, idleLimitSec - idleElapsedSec);
 		const em = Math.floor(idleElapsedSec / 60);
 		const es = idleElapsedSec % 60;
@@ -2099,7 +2137,7 @@ setInterval(() => {
 	}
 	
 	console.logColor(logging.Cyan,
-		`[${new Date().toISOString()}] HEARTBEAT | Streamers: ${streamers.size} | Players: ${players.size} | Browsers: ${browserPlayerCount()} | UE ping: ${getStreamerHealth().state} | Uptime: ${uptimeStr} | 유휴: ${idleStr}`
+		`[${new Date().toISOString()}] HEARTBEAT | 모드: ${lifecycleMode} | Streamers: ${streamers.size} | Players: ${players.size} | Browsers: ${browserPlayerCount()} | UE ping: ${getStreamerHealth().state} | Uptime: ${uptimeStr} | 유휴: ${idleStr}`
 	);
 	if (stopRetryStatus.state === 'exhausted') {
 		console.warn(`[HEARTBEAT] STOP retries exhausted (${stopRetryStatus.attempts}); operator inspection required`);
