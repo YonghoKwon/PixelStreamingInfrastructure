@@ -67,6 +67,7 @@ function startOfferWaitTimer(playerId, streamerId) {
 		// 스트리머를 Map에서 먼저 선제 제거 → ws.close() 이후 onStreamerDisconnected 중복 호출 차단
 		const zombieStreamer = streamers.get(streamerId);
 		if (zombieStreamer) {
+			clearNegotiationQueue(zombieStreamer);
 			streamers.delete(streamerId);
 			console.logColor(logging.Orange, `[ZOMBIE] 스트리머 ${streamerId} Map에서 선제 제거`);
 		}
@@ -196,7 +197,8 @@ const defaultConfig = {
 	PlayerKeepaliveTimeoutMs: 30000,
 	AppStartCooldownMs: 600000,
 	AppIdleTimeoutMs: APP_IDLE_TIMEOUT_MS,
-	AppAutoStart: true
+	AppAutoStart: true,
+	PlayerNegotiationGapMs: 1000
 };
 
 const argv = require('yargs').argv;
@@ -954,6 +956,100 @@ class Streamer {
 const PlayerType = { Regular: 0, SFU: 1 };
 const WhoSendsOffer = { Streamer: 0, Browser: 1 };
 
+// Each UE instance owns its pending negotiations; a reused endpoint ID must
+// never inherit work or timers from the previous socket.
+const negotiationQueues = new Map();
+function clearNegotiationQueue(streamer) {
+	const state = negotiationQueues.get(streamer);
+	if (!state) return;
+	clearTimeout(state.answerTimer);
+	clearTimeout(state.gapTimer);
+	state.waiting.length = 0;
+	state.active = null;
+	negotiationQueues.delete(streamer);
+}
+
+function currentNegotiation(state, entry) {
+	return negotiationQueues.get(state.streamer) === state &&
+		streamers.get(state.streamerId) === state.streamer && state.streamer.ws.readyState === WebSocket.OPEN &&
+		players.get(entry.player.id) === entry.player && entry.player.ws.readyState === WebSocket.OPEN &&
+		entry.player.streamerId === state.streamerId;
+}
+
+function sendPlayerConnected(player, message) {
+	logOutgoing(player.streamerId, message);
+	player.sendFrom(message);
+	// Queued browsers have no offer deadline until the UE is actually notified.
+	if (!player.isSFU() && player.whoSendsOffer === WhoSendsOffer.Streamer) {
+		startOfferWaitTimer(player.id, player.streamerId);
+	}
+}
+
+function pumpNegotiations(state) {
+	if (negotiationQueues.get(state.streamer) !== state || state.active || state.gapTimer) return;
+	if (streamers.get(state.streamerId) !== state.streamer || state.streamer.ws.readyState !== WebSocket.OPEN) {
+		clearNegotiationQueue(state.streamer);
+		return;
+	}
+	while (state.waiting.length) {
+		const entry = state.waiting.shift();
+		if (!currentNegotiation(state, entry)) continue;
+		state.active = entry;
+		state.answerTimer = setTimeout(() => finishNegotiation(state, entry, false), OFFER_WAIT_TIMEOUT_MS);
+		try { sendPlayerConnected(entry.player, entry.message); }
+		catch (error) { clearNegotiationQueue(state.streamer); throw error; }
+		return;
+	}
+	negotiationQueues.delete(state.streamer);
+}
+
+function finishNegotiation(state, entry, withGap = true) {
+	if (negotiationQueues.get(state.streamer) !== state || state.active !== entry) return;
+	clearTimeout(state.answerTimer);
+	state.answerTimer = null;
+	state.active = null;
+	if (withGap) {
+		state.gapTimer = setTimeout(() => {
+			state.gapTimer = null;
+			pumpNegotiations(state);
+		}, config.PlayerNegotiationGapMs);
+	} else pumpNegotiations(state); // An unanswered 20-second slot cannot block everyone else.
+}
+
+function cancelPlayerNegotiation(player) {
+	let unsent = false;
+	for (const state of negotiationQueues.values()) {
+		const before = state.waiting.length;
+		state.waiting = state.waiting.filter(entry => entry.player !== player);
+		unsent = unsent || before !== state.waiting.length;
+		if (state.active?.player === player) finishNegotiation(state, state.active);
+		else if (!state.active && !state.gapTimer && !state.waiting.length) negotiationQueues.delete(state.streamer);
+	}
+	return unsent;
+}
+
+function connectPlayerToStreamer(player, message) {
+	const streamer = streamers.get(player.streamerId);
+	// SFU signalling and browser-generated offers retain their existing path.
+	if (config.PlayerNegotiationGapMs === 0 || player.isSFU() || streamer.isSFU() ||
+		player.whoSendsOffer === WhoSendsOffer.Browser) return sendPlayerConnected(player, message);
+	let state = negotiationQueues.get(streamer);
+	if (!state) {
+		state = { streamer, streamerId: player.streamerId, waiting: [], active: null, answerTimer: null, gapTimer: null };
+		negotiationQueues.set(streamer, state);
+	}
+	state.waiting.push({ player, message });
+	pumpNegotiations(state);
+}
+
+function forwardPlayerAnswer(player, message) {
+	const streamer = streamers.get(player.streamerId);
+	const state = negotiationQueues.get(streamer);
+	const entry = state?.active;
+	forwardPlayerMessage(player, message); // Keep the production v1 forwarding body unchanged.
+	if (entry?.player === player && currentNegotiation(state, entry)) finishNegotiation(state, entry);
+}
+
 class Player {
 	constructor(id, ws, type, whoSendsOffer) {
 		this.id = id;
@@ -979,19 +1075,14 @@ class Player {
 			streamer.addSFUPlayer(this.id);
 		}
 		const msg = { type: 'playerConnected', playerId: this.id, dataChannel: true, sfu: this.type == PlayerType.SFU, sendOffer: this.whoSendsOffer == WhoSendsOffer.Streamer };
-		logOutgoing(this.streamerId, msg);
-		this.sendFrom(msg);
-		
-		// 이 줄 추가 (SFU 제외)
-		if (this.type !== PlayerType.SFU && this.whoSendsOffer === WhoSendsOffer.Streamer) {
-			startOfferWaitTimer(this.id, this.streamerId);
-		}
+		connectPlayerToStreamer(this, msg);
 	}
 
 	unsubscribe() {
+		const unsent = cancelPlayerNegotiation(this);
 		delete this.negotiatedStreamer;
 		clearOfferWaitTimer(this.id);
-		if (this.streamerId && streamers.has(this.streamerId)) {
+		if (!unsent && this.streamerId && streamers.has(this.streamerId)) {
 			if (this.type == PlayerType.SFU) {
 				let streamer = streamers.get(this.streamerId);
 				if (streamer.getSFUPlayerId() != this.id) {
@@ -1182,11 +1273,13 @@ function registerStreamer(id, streamer) {
 	}
 	
 	if (streamers.get(id) === streamer) return; // Duplicate endpointId on the same socket.
+	clearNegotiationQueue(streamer);
 
 	// 동일 ID 스트리머가 이미 있으면 기존 것을 종료하고 새 연결로 교체
 	// (재시작 시 238-1_2 같은 중복 스트리머 생성 방지)
 	if (streamers.has(id)) {
 		const oldStreamer = streamers.get(id);
+		clearNegotiationQueue(oldStreamer);
 		console.logColor(logging.Orange, `[STREAMER] "${id}" 재연결 감지 → 기존 스트리머 종료 후 새 연결로 교체`);
 		// 기존 스트리머에 연결된 플레이어들 해제 (재연결 유도)
 		disconnectAllPlayers(id);
@@ -1259,6 +1352,7 @@ function registerStreamer(id, streamer) {
 }
 
 function onStreamerDisconnected(streamer) {
+	clearNegotiationQueue(streamer);
 	if (streamer.idTimer) { clearTimeout(streamer.idTimer); streamer.idTimer = null; }
 	if (!streamer.id || !streamers.has(streamer.id)) {
 		// 추가 이미 제거된 streamer 재호출 감지
@@ -1721,7 +1815,7 @@ playerMessageHandlers.set('subscribe', onPlayerMessageSubscribe);
 playerMessageHandlers.set('unsubscribe', onPlayerMessageUnsubscribe);
 playerMessageHandlers.set('stats', onPlayerMessageStats);
 playerMessageHandlers.set('offer', forwardPlayerMessage);
-playerMessageHandlers.set('answer', forwardPlayerMessage);
+playerMessageHandlers.set('answer', forwardPlayerAnswer);
 playerMessageHandlers.set('iceCandidate', forwardPlayerIceMessage);
 playerMessageHandlers.set('listStreamers', onPlayerMessageListStreamers);
 // sfu related messages

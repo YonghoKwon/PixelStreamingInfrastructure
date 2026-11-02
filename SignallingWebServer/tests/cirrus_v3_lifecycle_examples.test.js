@@ -15,12 +15,12 @@ for (const [mode, auto, idle] of [['on-demand', true, 600000], ['always-on', fal
         for (const [key, value] of Object.entries(original)) assert.deepEqual(config[key], value);
         assert.equal(config.AppAutoStart, auto); assert.equal(config.AppIdleTimeoutMs, idle);
         const descriptions = Object.entries(config).filter(([key]) => key.startsWith('_'));
-        assert.equal(descriptions.length, 3);
+        assert.equal(descriptions.length, 4);
         assert.ok(config._운영모드.includes(auto ? '접속 시 기동' : '상시 운영'));
         assert.ok(config._설명_AppIdleTimeoutMs.includes('10분'));
         assert.ok(config._설명_AppAutoStart.includes('켜지 않음'));
         for (const [key, value] of descriptions) assert.doesNotMatch(key + value, /password|secret|token|credential|key/i);
-        const h = harness(config); const people = viewers(h);
+        const h = harness({ ...config, PlayerNegotiationGapMs: 0 }); const people = viewers(h);
         assert.equal(starts(h).length, auto ? 1 : 0); if (auto) h.complete();
         h.streamer();
         for (const p of people) assert.ok(p.sent.some(m => m.type === 'streamerList' && m.ids.includes('A')));
