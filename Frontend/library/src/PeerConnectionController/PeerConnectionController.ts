@@ -168,7 +168,8 @@ export class PeerConnectionController {
             this.onVideoStats(this.aggregatedStats);
 
             // Update the preferred codec selection based on what was actually negotiated
-            if (this.updateCodecSelection) {
+            if (this.updateCodecSelection &&
+                this.aggregatedStats.codecs.has(this.aggregatedStats.inboundVideoStats.codecId)) {
                 this.config.setOptionSettingValue(
                     OptionParameters.PreferredCodec,
                     this.aggregatedStats.codecs.get(

@@ -279,6 +279,10 @@ export class WebRtcPlayerController {
                     return;
                 }
 
+                const peer = this.peerConnectionController.peerConnection;
+                if (streamerid === this.subscribedStream && peer &&
+                    peer.connectionState !== 'closed' && peer.connectionState !== 'failed') return;
+
                 // close the current peer connection and create a new one
                 this.peerConnectionController.peerConnection.close();
                 this.peerConnectionController.createPeerConnection(
@@ -1315,6 +1319,8 @@ export class WebRtcPlayerController {
      * Handles when the signalling server gives us the list of streamer ids.
      */
     handleStreamerListMessage(messageStreamerList: MessageStreamerList) {
+        clearTimeout(this.autoJoinTimer);
+        this.autoJoinTimer = undefined;
         Logger.Log(
             Logger.GetStackTrace(),
             `Got streamer list ${messageStreamerList.ids}`,
@@ -1370,7 +1376,7 @@ export class WebRtcPlayerController {
                     // still reconnects available
                     this.isReconnecting = true;
                     this.reconnectAttempt++;
-                    setTimeout(() => {
+                    this.autoJoinTimer = setTimeout(() => {
                         this.webSocketController.requestStreamerList();
                     }, reconnectDelay);
                 } else {
