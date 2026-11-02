@@ -73,7 +73,7 @@ function loadConfig(file, defaults, argv, fileSystem = fs) {
     // yargs may return these two CLI spellings as strings. JSON must use booleans.
     if (cli.AppAutoStart === 'true') cli.AppAutoStart = true;
     if (cli.AppAutoStart === 'false') cli.AppAutoStart = false;
-    const config = { MaxWebSocketPayloadBytes: 4 * 1024 * 1024, AppStartMaxAttempts: 3, PlayerKeepaliveTimeoutMs: 30000, AppStartCooldownMs: 600000, AppIdleTimeoutMs: 600000, AppAutoStart: true, PlayerNegotiationGapMs: 1000, ...defaults, ...loaded, ...cli };
+    const config = { MaxWebSocketPayloadBytes: 4 * 1024 * 1024, AppStartMaxAttempts: 3, PlayerKeepaliveTimeoutMs: 30000, PlayerFirstMessageTimeoutMs: 0, AppStartCooldownMs: 600000, AppIdleTimeoutMs: 600000, AppAutoStart: true, PlayerNegotiationGapMs: 1000, ...defaults, ...loaded, ...cli };
     if (!Number.isInteger(config.PlayerNegotiationGapMs) ||
         (config.PlayerNegotiationGapMs !== 0 && (config.PlayerNegotiationGapMs < 100 || config.PlayerNegotiationGapMs > 10000))) {
         const error = new Error('Invalid PlayerNegotiationGapMs: expected 0 or integer 100..10000 (value omitted).');
@@ -98,6 +98,11 @@ function loadConfig(file, defaults, argv, fileSystem = fs) {
     if (!Number.isInteger(config.PlayerKeepaliveTimeoutMs) ||
         (config.PlayerKeepaliveTimeoutMs !== 0 && (config.PlayerKeepaliveTimeoutMs < 5000 || config.PlayerKeepaliveTimeoutMs > 600000))) {
         const error = new Error('Invalid PlayerKeepaliveTimeoutMs: expected 0 or integer 5000..600000 (value omitted).');
+        error.code = 'INVALID_CONFIG'; throw error;
+    }
+    if (!Number.isInteger(config.PlayerFirstMessageTimeoutMs) ||
+        (config.PlayerFirstMessageTimeoutMs !== 0 && (config.PlayerFirstMessageTimeoutMs < 5000 || config.PlayerFirstMessageTimeoutMs > 600000))) {
+        const error = new Error('Invalid PlayerFirstMessageTimeoutMs: expected 0 or integer 5000..600000 (value omitted).');
         error.code = 'INVALID_CONFIG'; throw error;
     }
     if (!Number.isInteger(config.AppStartCooldownMs) ||

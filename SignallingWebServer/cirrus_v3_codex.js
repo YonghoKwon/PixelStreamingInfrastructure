@@ -195,6 +195,7 @@ const defaultConfig = {
 	MaxWebSocketPayloadBytes: 4 * 1024 * 1024,
 	AppStartMaxAttempts: 3,
 	PlayerKeepaliveTimeoutMs: 30000,
+	PlayerFirstMessageTimeoutMs: 0,
 	AppStartCooldownMs: 600000,
 	AppIdleTimeoutMs: APP_IDLE_TIMEOUT_MS,
 	AppAutoStart: true,
@@ -1853,6 +1854,18 @@ playerServer.on('connection', function (ws, req) {
 	players.set(playerId, player);
 	v3.monitorPlayerSocket(ws, config.PlayerKeepaliveTimeoutMs, { setInterval, clearInterval,
 		onTimeout: () => console.warn(`[PLAYER] keepalive timeout: ${playerId}`) });
+	// Optional: a browser that never sends a message (e.g. a socket its page abandoned while
+	// connecting) is terminated so it does not count as a viewer or a waiting subscriber.
+	let firstMessageTimer = config.PlayerFirstMessageTimeoutMs > 0 ? setTimeout(() => {
+		firstMessageTimer = null;
+		if (ws.readyState !== WebSocket.OPEN) return;
+		console.warn(`[PLAYER] no message within ${config.PlayerFirstMessageTimeoutMs}ms: ${playerId}; closing silent socket`);
+		ws.terminate();
+	}, config.PlayerFirstMessageTimeoutMs) : null;
+	const clearFirstMessageTimer = () => {
+		if (firstMessageTimer) clearTimeout(firstMessageTimer);
+		firstMessageTimer = null;
+	};
 
 	// 추가 - 플레이어 접속 시 3D 앱 실행
 	resetStopRetryStatus();
@@ -1860,6 +1873,7 @@ playerServer.on('connection', function (ws, req) {
 	startApp();
 	
 	ws.on('message', (msgRaw) =>{
+		clearFirstMessageTimer();
 		var msg;
 		try {
 			msg = JSON.parse(msgRaw);
@@ -1890,6 +1904,7 @@ playerServer.on('connection', function (ws, req) {
 	});
 
 	ws.on('close', function(code, reason) {
+		clearFirstMessageTimer();
 		console.logColor(logging.Yellow, `player ${playerId} connection closed: ${code} - ${reason}`);
 		onPlayerDisconnected(playerId);
 	});

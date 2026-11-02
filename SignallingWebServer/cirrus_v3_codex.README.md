@@ -208,8 +208,11 @@ SFU는 정상 UE가 등록되어 있고 그 UE를 구독한 SFU의 `startStreami
 | --- | --- | --- |
 | `PlayerKeepaliveTimeoutMs` | 30000 | 0(끔) 또는 정수 5000..600000 |
 | `AppStartCooldownMs` | 600000 | 0(끔, 기존 G 정책) 또는 정수 60000..3600000 |
+| `PlayerFirstMessageTimeoutMs` | 0(끔) | 0 또는 정수 5000..600000 |
 
 브라우저 포트만 WebSocket 프로토콜 ping/pong으로 확인한다. JSON ping은 보내지 않는다.
+`PlayerFirstMessageTimeoutMs`를 켜면 연결 후 그 시간 안에 메시지를 한 번도 보내지 않은 브라우저 소켓을 terminate한다.
+화면이 연결 중에 버린 소켓이 시청자·대기자로 남는 경우를 정리하기 위한 선택 옵션이며, 정상 화면은 연결 직후 `listStreamers`를 보내므로 영향이 없다.
 직전 ping에 응답하지 않은 브라우저만 다음 주기에 terminate하며 기존 close 경로로 자리·구독을 정리한다.
 다른 시청자·UE·SFU는 유지하고 마지막 브라우저가 사라졌을 때 유휴 10분을 센다.
 브라우저 close 시 해당 타이머/pong 리스너를 정리한다. UE JSON ping은 여전히 진단 전용이다.
