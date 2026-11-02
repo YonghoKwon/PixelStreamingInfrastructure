@@ -42,3 +42,23 @@ test('first-message timeout accepts zero and integer bounds, rejects other value
         assert.throws(() => createHarness({ PlayerFirstMessageTimeoutMs: n }), /Invalid PlayerFirstMessageTimeoutMs/);
     }
 });
+
+test('enabled: UE registration auto-subscribes only waiting browsers that have sent a message', () => {
+    const h = createHarness({ PlayerFirstMessageTimeoutMs: 30000, AppAutoStart: false, AppIdleTimeoutMs: 0 }, { autoOffer: true });
+    const silent = h.player(), active = h.player();
+    active.message({ type: 'listStreamers' });
+    const ue = h.streamer(); h.advance(1000);
+    const connected = ue.sent.filter(m => m.type === 'playerConnected').map(m => m.playerId);
+    assert.deepEqual(connected, [h.playerId(active)]);
+    assert.ok(!h.run(`players.get('${h.playerId(silent)}').streamerId`));
+    h.advance(29000); assert.equal(silent.terminateCalls, 1); assert.equal(active.readyState, 1);
+});
+
+test('disabled: UE registration still auto-subscribes every waiting browser (F7a unchanged)', () => {
+    const h = createHarness({ AppAutoStart: false, AppIdleTimeoutMs: 0 });
+    const silent = h.player(), active = h.player();
+    active.message({ type: 'listStreamers' });
+    const ue = h.streamer(); h.advance(1000);
+    const connected = ue.sent.filter(m => m.type === 'playerConnected').map(m => m.playerId).sort();
+    assert.deepEqual(connected, [h.playerId(silent), h.playerId(active)].sort());
+});

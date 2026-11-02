@@ -1342,6 +1342,14 @@ function registerStreamer(id, streamer) {
 					const currentPlayer = players.get(waitingPlayer.id);
 					if (currentPlayer !== waitingPlayer || currentPlayer.ws.readyState !== WebSocket.OPEN ||
 						currentPlayer.streamerId) continue;
+					// With silent-socket cleanup enabled, a socket that never spoke is not a
+					// viewer: negotiating for it would hold the F6 queue and mislead the page.
+					if (config.PlayerFirstMessageTimeoutMs > 0 && !currentPlayer.hasSentMessage) {
+						console.logColor(logging.Yellow,
+							`[STREAMER] 메시지 없는 연결 ${currentPlayer.id} 자동 subscribe 제외`
+						);
+						continue;
+					}
 					console.logColor(logging.Green,
 						`[STREAMER] 대기 플레이어 ${currentPlayer.id} 자동 subscribe → ${onlyStreamerId}`
 					);
@@ -1866,6 +1874,10 @@ playerServer.on('connection', function (ws, req) {
 		if (firstMessageTimer) clearTimeout(firstMessageTimer);
 		firstMessageTimer = null;
 	};
+	const markPlayerMessage = () => {
+		player.hasSentMessage = true;
+		clearFirstMessageTimer();
+	};
 
 	// 추가 - 플레이어 접속 시 3D 앱 실행
 	resetStopRetryStatus();
@@ -1873,7 +1885,7 @@ playerServer.on('connection', function (ws, req) {
 	startApp();
 	
 	ws.on('message', (msgRaw) =>{
-		clearFirstMessageTimer();
+		markPlayerMessage();
 		var msg;
 		try {
 			msg = JSON.parse(msgRaw);
