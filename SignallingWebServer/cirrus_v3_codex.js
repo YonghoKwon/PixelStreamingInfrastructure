@@ -1235,19 +1235,23 @@ function registerStreamer(id, streamer) {
 			try { p.sendTo(listMsg); } catch (e) {}
 		});
 		
-		// [추가] 대기 중인 플레이어가 1명이고 스트리머도 1개면 자동 subscribe 시도
-		// 클라이언트가 listStreamers 재시도 대신 포기하는 경우를 서버에서 보완
-		if (waitingPlayers.length === 1 && streamers.size === 1) {
-			const soloPlayer = waitingPlayers[0];
-			const soloStreamerId = ids[0];
+		// A sole UE can serve every waiting browser, including reconnecting clients
+		// that receive streamerList but omit a repeated subscribe request.
+		if (!streamer.isSFU() && streamers.size === 1) {
+			const onlyStreamerId = streamer.id;
 			setTimeout(() => {
-				// 1초 후 아직 구독 안 됐으면 서버에서 직접 subscribe 처리
-				const currentPlayer = players.get(soloPlayer.id);
-				if (currentPlayer && !currentPlayer.streamerId) {
+				for (const waitingPlayer of waitingPlayers) {
+					// Never act on a replaced UE, a departed/replaced browser, or
+					// a client that already made its own selection during this second.
+					if (streamers.size !== 1 || streamers.get(onlyStreamerId) !== streamer ||
+						streamer.ws.readyState !== WebSocket.OPEN) return;
+					const currentPlayer = players.get(waitingPlayer.id);
+					if (currentPlayer !== waitingPlayer || currentPlayer.ws.readyState !== WebSocket.OPEN ||
+						currentPlayer.streamerId) continue;
 					console.logColor(logging.Green,
-						`[STREAMER] 대기 플레이어 ${soloPlayer.id} 자동 subscribe → ${soloStreamerId}`
+						`[STREAMER] 대기 플레이어 ${currentPlayer.id} 자동 subscribe → ${onlyStreamerId}`
 					);
-					currentPlayer.subscribe(soloStreamerId);
+					currentPlayer.subscribe(onlyStreamerId);
 				}
 			}, 1000);
 		}
