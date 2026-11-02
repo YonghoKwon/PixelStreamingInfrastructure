@@ -45,9 +45,20 @@ function createHarness(overrides = {}, options = {}) {
             this._socket = { remoteAddress: '::ffff:127.0.0.1' };
         }
         send(raw, callback) {
-            if (this.readyState !== 1) throw new Error('Socket is not open');
+            if (this.readyState !== 1) {
+                if (options.closedSendCallback) { callback?.(new Error('Socket is not open')); return; }
+                throw new Error('Socket is not open');
+            }
             if (this.failSend) { if (callback) callback(new Error('simulated send failure')); return; }
             this.sent.push(JSON.parse(raw));
+            if (this.respondToPlayerConnected && this.sent.at(-1).type === 'playerConnected' &&
+                !this.withheldOfferPlayers.has(this.sent.at(-1).playerId)) {
+                const message = this.sent.at(-1);
+                // Defer like a real network response until subscribe has armed its timer.
+                schedule(() => {
+                    if (this.readyState === 1) this.message({ type: 'offer', playerId: message.playerId, sdp: 'v=0\r\n' });
+                }, 0);
+            }
             if (callback) callback();
         }
         close(code = 1000, reason = '') {
@@ -114,7 +125,7 @@ function createHarness(overrides = {}, options = {}) {
         './modules/logging.js': { RegisterConsoleLogger() {}, RegisterFileLogger() {} },
         './modules/config.js': { init(file, defaults) { return { ...defaults, ...overrides }; } },
         './modules/cirrus-v3-support': require('../../modules/cirrus-v3-support'),
-        yargs: { argv: {} }, http: { Server: function () { return new FakeServer(); } },
+        yargs: { argv: options.argv || {} }, http: { Server: function () { return new FakeServer(); } },
         https: { Server: function (options) { return new FakeServer(options); } },
         helmet: middlewareFactory, hsts: middlewareFactory, 'express-rate-limit': middlewareFactory,
         net: { Socket: class extends EventEmitter { connect() { this.emit('connect'); } setKeepAlive() {} write() {} } },
@@ -147,6 +158,8 @@ function createHarness(overrides = {}, options = {}) {
     }
     function streamer(id = 'A') {
         const socket = connect('streamerServer');
+        socket.respondToPlayerConnected = !!options.autoOffer;
+        socket.withheldOfferPlayers = new Set(); // Opt-in per-player negotiation failure injection.
         if (id !== null) socket.message({ type: 'endpointId', id });
         return socket;
     }

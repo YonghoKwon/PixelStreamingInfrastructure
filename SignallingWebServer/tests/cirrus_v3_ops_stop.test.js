@@ -25,8 +25,12 @@ test('new browser clears STOP exhaustion but does not issue another STOP', () =>
     assert.equal(h.run('getServiceStatus().stopRetry.state'), 'idle'); assert.equal(h.commands.length, 5);
 });
 
-test('observed final UE disconnect clears STOP exhaustion', () => {
+test('observed final UE disconnect clears STOP exhaustion after five-second absence', () => {
     const { h, ue } = exhaust(); ue.finishClose();
+    assert.equal(h.run('getServiceStatus().stopRetry.state'), 'exhausted');
+    h.advance(4999);
+    assert.equal(h.run('getServiceStatus().stopRetry.state'), 'exhausted');
+    h.advance(1);
     assert.equal(h.run('getServiceStatus().stopRetry.state'), 'idle');
     h.advance(15000); assert.equal(h.commands.length, 5);
 });
