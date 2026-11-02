@@ -1,0 +1,5 @@
+# Library build and release output (other common outputs are ignored at repo root).
+types/
+build/
+artifacts/
+*.tgz
