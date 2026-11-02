@@ -199,7 +199,7 @@ describe('PixelStreaming', () => {
     });
 
     it('should automatically reconnect and request streamer list N times on websocket close', () => {
-        const config = new Config({ initialSettings: {ss: mockSignallingUrl, AutoConnect: true, MaxReconnectAttempts: 3}});
+        const config = new Config({ initialSettings: {ss: mockSignallingUrl, AutoConnect: true, MaxReconnectAttempts: 3, StreamerAutoJoinInterval: 1000}});
         const autoconnectedSpy = jest.fn();
 
         const pixelStreaming = new PixelStreaming(config);
@@ -257,6 +257,18 @@ describe('PixelStreaming', () => {
         expect(webSocketSpyFunctions.sendSpy).toHaveBeenCalledWith(
             expect.stringMatching(/"type":"listStreamers"/)
         );
+    });
+
+    it('preserves the negotiating peer and cancels a stale discovery retry after selection', () => {
+        new PixelStreaming(new Config({ initialSettings: {ss: mockSignallingUrl, AutoConnect: true}}));
+        triggerWebSocketOpen(); triggerConfigMessage();
+        triggerStreamerListMessage([]);
+        triggerStreamerListMessage(streamerIdList);
+        const peers = (rtcPeerConnectionSpyFunctions.constructorSpy as jest.Mock).mock.calls.length;
+        triggerStreamerListMessage(streamerIdList);
+        jest.advanceTimersByTime(3100);
+        expect(rtcPeerConnectionSpyFunctions.constructorSpy).toHaveBeenCalledTimes(peers);
+        expect((webSocketSpyFunctions.sendSpy as jest.Mock).mock.calls.filter(call => JSON.parse(call[0]).type === 'listStreamers')).toHaveLength(1);
     });
 
     it('should autoselect a streamer if receiving only one streamer in streamerList message', () => {

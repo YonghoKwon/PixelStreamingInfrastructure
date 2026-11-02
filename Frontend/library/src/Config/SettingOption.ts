@@ -101,6 +101,11 @@ export class SettingOption<
      * @param value Selected option
      */
     public set selected(value: string) {
+        if (typeof value !== 'string' || !value.trim()) {
+            // Empty StreamerId remains a valid discovery placeholder.
+            if (value === '' && this.options.includes('')) this.value = '';
+            return;
+        }
         // A user may not specify the full possible value so we instead use the closest match.
         // eg ?xxx=H264 would select 'H264 level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f'
         let filteredList = this.options.filter(

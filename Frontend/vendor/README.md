@@ -43,11 +43,12 @@ complete offline build kit. No registry URL or credentials are committed here.
   npm SHA-512 integrity. Internal archive docs describe its original Nexus
   distribution; this wrapper documents the repository-local distribution.
 
-To update, build a new version with the library repository's
+To update, build a new version from `Frontend/library` with
 `npm run package:release`, review its license/content and copy its tgz here.
 Update the file dependency, refresh the lock with `npm run lock:portable`,
 update this digest/provenance, and verify a clean install/build. Do not silently
 replace an archive under the same version/filename. `build-all` and
 `build-dev-all` now alias the normal production/development frontend builds.
 They use installed dependencies instead of linking/rebuilding the in-tree
-upstream library, which does not contain this IME patch.
+library. `Frontend/library` now contains the imported 1.0.10 source, including
+the IME patch; the existing vendor archive and consumption path are unchanged.

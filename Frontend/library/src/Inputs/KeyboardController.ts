@@ -6,6 +6,7 @@ import { ActiveKeys } from './InputClassesFactory';
 import { StreamMessageController } from '../UeInstanceMessage/StreamMessageController';
 import { Config, Flags } from '../Config/Config';
 import { EventListenerTracker } from '../Util/EventListenerTracker';
+import { ImeInput } from './ImeInput';
 
 interface ICodeToKeyCode {
     [key: string]: number;
@@ -21,6 +22,8 @@ export class KeyboardController {
 
     // Utility for keeping track of event handlers and unregistering them
     private keyboardEventListenerTracker = new EventListenerTracker();
+    private ime?: ImeInput;
+    private forwardedKeys = new Set<number>();
 
     /*
      * New browser APIs have moved away from KeyboardEvent.keyCode to KeyboardEvent.Code.
@@ -139,7 +142,8 @@ export class KeyboardController {
     constructor(
         toStreamerMessagesProvider: StreamMessageController,
         config: Config,
-        activeKeysProvider: ActiveKeys
+        activeKeysProvider: ActiveKeys,
+        private videoElement?: HTMLVideoElement
     ) {
         this.toStreamerMessagesProvider = toStreamerMessagesProvider;
         this.config = config;
@@ -150,6 +154,11 @@ export class KeyboardController {
      * Registers document keyboard events with the controller
      */
     registerKeyBoardEvents() {
+        if (this.videoElement) {
+            this.ime = new ImeInput(this.videoElement,
+                () => this.config.isFlagEnabled(Flags.EnableIME),
+                text => this.sendCommittedText(text), () => this.releaseKeys());
+        }
         const keyDownHandler = (ev: KeyboardEvent) => this.handleOnKeyDown(ev);
         const keyUpHandler = (ev: KeyboardEvent) => this.handleOnKeyUp(ev);
         const keyPressHandler = (ev: KeyboardEvent) => this.handleOnKeyPress(ev);
@@ -175,7 +184,28 @@ export class KeyboardController {
      * Unregisters document keyboard events
      */
     unregisterKeyBoardEvents() {
+        this.ime?.dispose(); this.ime = undefined;
+        this.releaseKeys();
         this.keyboardEventListenerTracker.unregisterAll();
+    }
+
+    private releaseKeys() {
+        for (const key of this.forwardedKeys) this.toStreamerMessagesProvider.toStreamerHandlers.get('KeyUp')?.([key]);
+        this.forwardedKeys.clear();
+        this.activeKeysProvider.getActiveKeys().length = 0;
+    }
+
+    private sendCommittedText(text: string) {
+        if (this.forwardedKeys.has(17) || this.forwardedKeys.has(91) || this.forwardedKeys.has(93)) this.releaseKeys();
+        // UE5.3 KeyPress uses UTF-16 code units, not UTF-8 bytes or key codes.
+        for (let i = 0; i < text.length; i++) {
+            this.toStreamerMessagesProvider.toStreamerHandlers.get('KeyPress')?.([text.charCodeAt(i)]);
+        }
+    }
+
+    private isLocalEditor(event: KeyboardEvent): boolean {
+        const target = event.target instanceof Element ? event.target : document.activeElement;
+        return !!target?.closest('input,textarea,select,[contenteditable]:not([contenteditable="false"])') && !this.ime?.ownsFocus();
     }
 
     /**
@@ -183,9 +213,17 @@ export class KeyboardController {
      * @param keyboardEvent - Keyboard event
      */
     handleOnKeyDown(keyboardEvent: KeyboardEvent) {
+        if (this.isLocalEditor(keyboardEvent) || this.ime?.isComposing(keyboardEvent)) return;
+        if (this.ime?.ownsFocus() && (keyboardEvent.ctrlKey || keyboardEvent.metaKey) &&
+            (keyboardEvent.code === 'KeyV' || keyboardEvent.keyCode === 86)) return;
         const keyCode = this.getKeycode(keyboardEvent);
         if (!keyCode) {
             return;
+        }
+
+        if (this.ime?.ownsFocus() && [9, 13, 27, 35, 36, 37, 38, 39, 40, 46].includes(keyCode)) this.ime.clearBuffer();
+        if (this.ime?.ownsFocus() && (keyboardEvent.ctrlKey || keyboardEvent.metaKey) && [88, 89, 90].includes(keyCode)) {
+            this.ime.clearBuffer(); keyboardEvent.preventDefault();
         }
 
         Logger.Log(
@@ -200,15 +238,16 @@ export class KeyboardController {
             keyboardEvent.repeat ? 1 : 0
         ]);
         const activeKeys = this.activeKeysProvider.getActiveKeys();
-        activeKeys.push(keyCode);
+        if (!activeKeys.includes(keyCode)) activeKeys.push(keyCode);
+        this.forwardedKeys.add(keyCode);
         // Backspace is not considered a keypress in JavaScript but we need it
         // to be so characters may be deleted in a UE text entry field.
         if (keyCode === SpecialKeyCodes.backSpace) {
-            document.dispatchEvent(
-                new KeyboardEvent('keypress', {
-                    charCode: SpecialKeyCodes.backSpace
-                })
-            );
+            this.ime?.noteDelete(true);
+            this.sendCommittedText('\b');
+        } else if (keyCode === 13 && this.ime?.ownsFocus()) {
+            keyboardEvent.preventDefault();
+            this.sendCommittedText('\r');
         }
 
         if (
@@ -224,6 +263,8 @@ export class KeyboardController {
      * @param keyboardEvent - Keyboard event
      */
     handleOnKeyUp(keyboardEvent: KeyboardEvent) {
+        if (this.isLocalEditor(keyboardEvent)) { this.releaseKeys(); return; }
+        if (this.ime?.isComposing(keyboardEvent)) return;
         const keyCode = this.getKeycode(keyboardEvent);
         if (!keyCode) {
             return;
@@ -232,7 +273,13 @@ export class KeyboardController {
         Logger.Log(Logger.GetStackTrace(), `key up ${keyCode}`, 6);
         const toStreamerHandlers =
             this.toStreamerMessagesProvider.toStreamerHandlers;
+        if (!this.forwardedKeys.has(keyCode)) return;
         toStreamerHandlers.get('KeyUp')([ keyCode ]);
+        this.forwardedKeys.delete(keyCode);
+        const activeKeys = this.activeKeysProvider.getActiveKeys();
+        const index = activeKeys.indexOf(keyCode);
+        if (index >= 0) activeKeys.splice(index, 1);
+        if (keyCode === SpecialKeyCodes.backSpace) this.ime?.noteDelete(false);
 
         if (
             this.config.isFlagEnabled(Flags.SuppressBrowserKeys) &&
@@ -247,6 +294,7 @@ export class KeyboardController {
      * @param keyboard - Keyboard Event
      */
     handleOnKeyPress(keyboard: KeyboardEvent) {
+        if (this.isLocalEditor(keyboard) || this.ime?.ownsFocus() || this.ime?.isComposing(keyboard)) return;
         if (!('charCode' in keyboard)) {
             Logger.Warning(
                 Logger.GetStackTrace(),

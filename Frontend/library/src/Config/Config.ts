@@ -27,6 +27,7 @@ export class Flags {
     static SuppressBrowserKeys = 'SuppressBrowserKeys' as const;
     static UseMic = 'UseMic' as const;
     static KeyboardInput = 'KeyboardInput' as const;
+    static EnableIME = 'EnableIME' as const;
     static MouseInput = 'MouseInput' as const;
     static TouchInput = 'TouchInput' as const;
     static GamepadInput = 'GamepadInput' as const;
@@ -416,6 +417,12 @@ export class Config {
                 useUrlParams
             )
         );
+
+        this.flags.set(Flags.EnableIME, new SettingFlag(
+            Flags.EnableIME, 'IME text input',
+            'Compose text in the browser and send committed characters to UE. Click the streamed viewport to focus.',
+            true, useUrlParams
+        ));
 
         this.flags.set(
             Flags.TouchInput,

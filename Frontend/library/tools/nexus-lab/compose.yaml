@@ -1,0 +1,27 @@
+name: psf-nexus-lab
+services:
+  nexus:
+    image: sonatype/nexus3:3.86.2@sha256:8653beddcadf1a74f9fccde354dc3bc56bb0de8a6b650b8da9ce007585010930
+    container_name: psf-nexus-lab
+    ports:
+      - "127.0.0.1:48081:8081"
+    environment:
+      INSTALL4J_ADD_VM_PARAMS: "-Xms512m -Xmx2703m -XX:MaxDirectMemorySize=2703m -Djava.util.prefs.userRoot=/nexus-data/javaprefs"
+    mem_limit: 6g
+    cpus: 2
+    volumes:
+      - nexus-data:/nexus-data
+    networks:
+      - egress
+      - clients
+    labels:
+      com.yongho.pixelstreaming.test: nexus-package-lab
+volumes:
+  nexus-data:
+    name: psf-nexus-lab-data
+networks:
+  egress:
+    name: psf-nexus-lab-egress
+  clients:
+    name: psf-nexus-lab-clients
+    internal: true

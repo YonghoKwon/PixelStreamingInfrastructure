@@ -30,7 +30,7 @@ export class DataChannelLatencyTestController {
     callback: DataChannelLatencyTestResultCallback;
     records: Map<DataChannelLatencyTestSeq, DataChannelLatencyTestRecord>;
     seq: DataChannelLatencyTestSeq;
-    interval: NodeJS.Timer;
+    interval: ReturnType<typeof setInterval>;
 
     constructor(sink: DataChannelLatencyTestSink, callback: DataChannelLatencyTestResultCallback) {
         this.sink = sink;

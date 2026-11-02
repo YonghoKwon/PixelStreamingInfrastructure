@@ -2,7 +2,8 @@
 
 기본 TypeScript 화면은 프로젝트에 포함된
 `@epicgames-ps/lib-pixelstreamingfrontend-ue5.3@1.0.10` npm 패키지를 사용합니다.
-공식 npm 1.0.9 원본은 라이브러리 저장소의 원본 태그에 보존돼 있습니다.
+공식 npm 1.0.9 원본은 기존 PixelStreamingFrontendLib 저장소의 원본 태그에 보존돼 있습니다.
+수정된 1.0.10 소스는 이제 Infrastructure의 `Frontend/library`에 있습니다.
 빌드된 `.tgz`는 `Frontend/vendor`에 있으며 package.json과 lockfile이 이 로컬 파일을 참조합니다.
 새 환경에서도 이 SDK를 Nexus·GitHub·공개 npm에서 다운로드하지 않습니다.
 `Frontend` 폴더 전체를 함께 복사하거나 체크아웃해야 상대 경로가 유지됩니다.
@@ -19,7 +20,7 @@ npm run build
 
 생성물은 `SignallingWebServer/Public`입니다. 기존 배포 절차로 이 파일을 웹서버에 배치합니다.
 `build-all`·`build-dev-all`도 포함된 SDK를 사용하는 일반 빌드의 별칭이며,
-한글 수정이 없는 별도 원본 라이브러리를 npm link로 연결하지 않습니다.
+`Frontend/library`에도 한글 수정이 반영됐지만 소비 경로는 기존 vendor tgz를 유지합니다.
 3D의 텍스트 입력칸을 클릭한 뒤 바로 한글을 입력합니다. 별도 IME 포커스 버튼은 없습니다.
 기본 마우스 모드는 hovering이며 명시적인 URL 옵션은 유지합니다.
 `?EnableIME=false`로 기존 입력 경로를 선택할 수 있습니다.
