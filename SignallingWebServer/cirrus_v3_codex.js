@@ -728,6 +728,14 @@ let scheduledRestartConsumedThrough = '';
 let scheduledRestartTimer = null;
 let scheduledRestartStepTimer = null;
 
+function formatScheduledRestartTime(at) {
+	if (at === null) return '-';
+	const date = new Date(at);
+	const time = `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+	const day = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][date.getDay()];
+	return `${v3.restartDateKey(date)} ${time} (${day})`;
+}
+
 function recordScheduledRestart(result) {
 	scheduledRestartLast = { at: new Date().toISOString(), result };
 	const method = result === 'ok' ? 'log' : result.startsWith('failed:') ? 'error' : 'warn';
@@ -2393,7 +2401,7 @@ setInterval(() => {
 	}
 	
 	console.logColor(logging.Cyan,
-		`[${new Date().toISOString()}] HEARTBEAT | 모드: ${lifecycleMode} | Streamers: ${streamers.size} | Players: ${players.size} | Browsers: ${browserPlayerCount()} | UE ping: ${getStreamerHealth().state} | Uptime: ${uptimeStr} | 유휴: ${idleStr}${config.AppRestartTime ? ' | Next 3D restart: ' + new Date(scheduledRestartNextAt).toISOString() : ''}`
+		`[${new Date().toISOString()}] HEARTBEAT | 모드: ${lifecycleMode} | Streamers: ${streamers.size} | Players: ${players.size} | Browsers: ${browserPlayerCount()} | UE ping: ${getStreamerHealth().state} | Uptime: ${uptimeStr} | 유휴: ${idleStr}${config.AppRestartTime ? ' | Next 3D restart: ' + formatScheduledRestartTime(scheduledRestartNextAt) : ''}`
 	);
 	if (stopRetryStatus.state === 'exhausted') {
 		console.warn(`[HEARTBEAT] STOP retries exhausted (${stopRetryStatus.attempts}); operator inspection required`);
@@ -2413,6 +2421,6 @@ setInterval(() => {
 if (!config.AppRestartTime && config.restartDaysSpecified) {
 	console.warn('[SCHEDULED_RESTART] AppRestartDays supplied without AppRestartTime; disabled');
 }
-console.log(`[SCHEDULED_RESTART] ${config.AppRestartTime ? 'enabled' : 'disabled'} | time=${config.AppRestartTime || '-'} | days=${config.AppRestartDays.join(',')} | next=${scheduledRestartNextAt === null ? '-' : new Date(scheduledRestartNextAt).toISOString()}`);
+console.log(`[SCHEDULED_RESTART] ${config.AppRestartTime ? 'enabled' : 'disabled'} | time=${config.AppRestartTime || '-'} | days=${config.AppRestartDays.join(',')} | next=${formatScheduledRestartTime(scheduledRestartNextAt)}`);
 armScheduledRestart();
 startIdleTimer();

@@ -269,9 +269,9 @@ STOP과 스트리머 종료를 최대 60초 기다린 뒤 5초 유예하고 STAR
 경고와 함께 건너뛴다. 같은 프로세스에서 같은 현지 날짜는 두 번 실행하지 않는다.
 시각·요일 변경은 config를 바꾼 뒤 cirrus를 재기동해야 적용된다.
 
-시작 로그는 예약 켜짐/꺼짐·시각·요일·다음 시각을 표시하고, 켜진 경우 HEARTBEAT에도 다음 시각을 표시한다.
+시작 로그와 켜진 경우의 HEARTBEAT는 다음 예약을 서버 현지 시각 `YYYY-MM-DD HH:MM (Thu)` 형식(요일 영문 3글자)으로 표시한다.
 `/healthz.scheduledRestart`는 `enabled`, `time`, `days`, `nextAt`와 `last: { at, result }`를 제공한다.
-시각은 ISO 문자열(UTC), 아직 실행하지 않았거나 꺼진 경우 해당 값은 `null`이다.
+`nextAt`·`last.at`은 기존대로 ISO 문자열(UTC)이며, 아직 실행하지 않았거나 꺼진 경우 해당 값은 `null`이다.
 `result`는 `ok`, `skipped:<이유>`, `failed:<이유>`이다. `/readyz`의 기존 판정식은 유지한다.
 요일·시각의 실제 적용은 서버의 `TZ`/운영체제 시간대를 확인한다.
 
