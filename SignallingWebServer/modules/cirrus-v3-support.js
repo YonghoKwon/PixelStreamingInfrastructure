@@ -73,6 +73,7 @@ function loadConfig(file, defaults, argv, fileSystem = fs) {
     // yargs may return these two CLI spellings as strings. JSON must use booleans.
     if (cli.AppAutoStart === 'true') cli.AppAutoStart = true;
     if (cli.AppAutoStart === 'false') cli.AppAutoStart = false;
+    if (typeof cli.AppRestartTime === 'string' && cli.AppRestartTime.includes(',')) cli.AppRestartTime = cli.AppRestartTime.split(',');
     if (typeof cli.AppRestartDays === 'string') cli.AppRestartDays = cli.AppRestartDays.split(',');
     defaults = { AppRestartTime: '', AppRestartDays: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'], ...defaults };
     const config = { MaxWebSocketPayloadBytes: 4 * 1024 * 1024, AppStartMaxAttempts: 3, PlayerKeepaliveTimeoutMs: 30000, AppStartCooldownMs: 600000, AppIdleTimeoutMs: 600000, AppAutoStart: true, PlayerNegotiationGapMs: 1000, ...defaults, ...loaded, ...cli };
@@ -112,9 +113,13 @@ function loadConfig(file, defaults, argv, fileSystem = fs) {
         error.code = 'INVALID_CONFIG';
         throw error;
     }
-    if (typeof config.AppRestartTime !== 'string' ||
-        (config.AppRestartTime !== '' && !/^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/.test(config.AppRestartTime))) {
-        const error = new Error('Invalid AppRestartTime: expected empty string or HH:MM (value omitted).');
+    // Validate raw elements before sorting, which can invoke object coercion.
+    const times = Array.isArray(config.AppRestartTime) ? config.AppRestartTime :
+        config.AppRestartTime === '' ? [] : [config.AppRestartTime];
+    if ((!Array.isArray(config.AppRestartTime) && typeof config.AppRestartTime !== 'string') ||
+        times.length > 24 || times.some(time => typeof time !== 'string' || !/^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/.test(time)) ||
+        new Set(times).size !== times.length) {
+        const error = new Error('Invalid AppRestartTime: expected empty string, HH:MM or up to 24 distinct HH:MM strings (value omitted).');
         error.code = 'INVALID_CONFIG'; throw error;
     }
     if (!Array.isArray(config.AppRestartDays) || config.AppRestartDays.length === 0 ||
@@ -128,22 +133,56 @@ function loadConfig(file, defaults, argv, fileSystem = fs) {
     return config;
 }
 
-// Strictly future local wall-clock occurrence. Calendar arithmetic preserves DST.
+function restartTimes(time) {
+    return Array.isArray(time) ? [...time].sort() : time === '' ? [] : [time];
+}
+
+// Strictly future local wall-clock occurrence, guarded by a local date+time watermark.
 function nextRestartAt(now, time, days, consumedThrough = '') {
-    if (!time) return null;
-    const [hour, minute] = time.split(':').map(Number);
-    for (let offset = 0; offset < 15; offset++) {
+    const times = restartTimes(time);
+    if (!times.length) return null;
+    // Retain compatibility with callers supplying the former whole-day watermark.
+    if (consumedThrough.length === 10) consumedThrough += 'T23:59';
+    const anchor = new Date(now);
+    if (restartDateKey(anchor) < consumedThrough.slice(0, 10)) {
+        const consumed = new Date(consumedThrough.slice(0, 10) + 'T12:00:00');
+        anchor.setFullYear(consumed.getFullYear(), consumed.getMonth(), consumed.getDate());
+    }
+    for (let offset = 0; offset < 8; offset++) {
+        let earliest = null;
+        for (const time of times) {
+            const candidate = new Date(anchor);
+            candidate.setDate(candidate.getDate() + offset);
+            candidate.setHours(...time.split(':').map(Number), 0, 0);
+            if (candidate.getTime() > Number(now) && restartOccurrenceKey(candidate) > consumedThrough &&
+                days.includes(['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][candidate.getDay()])) {
+                if (earliest === null || candidate.getTime() < earliest) earliest = candidate.getTime();
+            }
+        }
+        if (earliest !== null) return earliest;
+    }
+}
+
+function restartOccurrenceKey(date) {
+    return `${restartDateKey(date)}T${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
+
+function restartConsumedThrough(dueAt, now, times, days, previous = '') {
+    let through = [previous, restartOccurrenceKey(new Date(dueAt)), restartOccurrenceKey(new Date(now))].sort().at(-1);
+    // Older dates are covered by the current wall-clock key. Near a DST fold,
+    // elapsed slots can have later local keys than now (including across midnight).
+    // Inspect neighboring calendar dates without walking an arbitrarily long sleep.
+    for (const offset of [-1, 0, 1]) for (const time of times) {
         const candidate = new Date(now);
         candidate.setDate(candidate.getDate() + offset);
-        candidate.setHours(hour, minute, 0, 0);
-        if (candidate.getTime() > Number(now) && restartDateKey(candidate) > consumedThrough &&
-            days.includes(['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][candidate.getDay()])) return candidate.getTime();
+        candidate.setHours(...time.split(':').map(Number), 0, 0);
+        if (candidate.getTime() >= dueAt && candidate.getTime() <= now &&
+            days.includes(['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][candidate.getDay()])) {
+            const key = restartOccurrenceKey(candidate);
+            if (key > through) through = key;
+        }
     }
-    // A backward clock change may put the consumed day more than two weeks ahead.
-    const future = new Date(consumedThrough + 'T12:00:00');
-    future.setDate(future.getDate() + 1);
-    future.setHours(0, 0, 0, 0);
-    return nextRestartAt(future.getTime() - 1, time, days);
+    return through;
 }
 
 function restartDateKey(date) {
@@ -319,4 +358,4 @@ function createCommandRunner(options = {}) {
     return { run, snapshot, isBlocked: () => !!blocked, noteRegistered: () => { if (!blocked) timeouts = 0; } };
 }
 
-module.exports = { createLogRedactor, loadConfig, nextRestartAt, restartDateKey, certificatePath, closeReason, monitorPlayerSocket, installErrorFileLogger, createCommandRunner };
+module.exports = { createLogRedactor, loadConfig, nextRestartAt, restartDateKey, restartTimes, restartOccurrenceKey, restartConsumedThrough, certificatePath, closeReason, monitorPlayerSocket, installErrorFileLogger, createCommandRunner };

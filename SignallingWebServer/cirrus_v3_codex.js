@@ -722,6 +722,7 @@ function startIdleTimer() {
 	}, config.AppIdleTimeoutMs);
 }
 
+const scheduledRestartTimes = v3.restartTimes(config.AppRestartTime);
 let scheduledRestartNextAt = v3.nextRestartAt(Date.now(), config.AppRestartTime, config.AppRestartDays);
 let scheduledRestartLast = { at: null, result: null };
 let scheduledRestartConsumedThrough = '';
@@ -845,15 +846,18 @@ function stepScheduledRestart() {
 }
 
 function armScheduledRestart() {
-	if (!config.AppRestartTime) return;
+	if (!scheduledRestartTimes.length) return;
 	if (scheduledRestartTimer) clearTimeout(scheduledRestartTimer);
 	scheduledRestartTimer = setTimeout(() => {
 		scheduledRestartTimer = null;
 		const now = Date.now();
 		const dueAt = scheduledRestartNextAt;
 		if (now >= dueAt) {
-			scheduledRestartConsumedThrough = v3.restartDateKey(new Date(dueAt));
-			if (now - dueAt > 120000) recordScheduledRestart('skipped:late-wakeup');
+			// Consume every elapsed slot, including those skipped during sleep.
+			scheduledRestartConsumedThrough = v3.restartConsumedThrough(dueAt, now,
+				scheduledRestartTimes, config.AppRestartDays, scheduledRestartConsumedThrough);
+			const following = v3.nextRestartAt(dueAt, config.AppRestartTime, config.AppRestartDays);
+			if (now - dueAt > 120000 || following <= now) recordScheduledRestart('skipped:late-wakeup');
 			else if (scheduledRestartActive) recordScheduledRestart('skipped:restart-active');
 			else {
 				scheduledRestartActive = { phase: 'busy', dueAt, attempts: 0 };
@@ -887,7 +891,7 @@ function getServiceStatus() {
 		stopRetry: { ...stopRetryStatus },
 		startRetry: { ...startRetryStatus },
 		streamerHealth: getStreamerHealth(),
-		scheduledRestart: { enabled: !!config.AppRestartTime, time: config.AppRestartTime,
+		scheduledRestart: { enabled: scheduledRestartTimes.length > 0, time: scheduledRestartTimes.join(','), times: [...scheduledRestartTimes],
 			days: [...config.AppRestartDays], nextAt: scheduledRestartNextAt === null ? null : new Date(scheduledRestartNextAt).toISOString(),
 			last: { ...scheduledRestartLast } },
 		mediaValidated: false };
@@ -2401,7 +2405,7 @@ setInterval(() => {
 	}
 	
 	console.logColor(logging.Cyan,
-		`[${new Date().toISOString()}] HEARTBEAT | 모드: ${lifecycleMode} | Streamers: ${streamers.size} | Players: ${players.size} | Browsers: ${browserPlayerCount()} | UE ping: ${getStreamerHealth().state} | Uptime: ${uptimeStr} | 유휴: ${idleStr}${config.AppRestartTime ? ' | Next 3D restart: ' + formatScheduledRestartTime(scheduledRestartNextAt) : ''}`
+		`[${new Date().toISOString()}] HEARTBEAT | 모드: ${lifecycleMode} | Streamers: ${streamers.size} | Players: ${players.size} | Browsers: ${browserPlayerCount()} | UE ping: ${getStreamerHealth().state} | Uptime: ${uptimeStr} | 유휴: ${idleStr}${scheduledRestartTimes.length ? ' | Next 3D restart: ' + formatScheduledRestartTime(scheduledRestartNextAt) : ''}`
 	);
 	if (stopRetryStatus.state === 'exhausted') {
 		console.warn(`[HEARTBEAT] STOP retries exhausted (${stopRetryStatus.attempts}); operator inspection required`);
@@ -2418,9 +2422,9 @@ setInterval(() => {
 	}
 }, 30000);
 
-if (!config.AppRestartTime && config.restartDaysSpecified) {
+if (!scheduledRestartTimes.length && config.restartDaysSpecified) {
 	console.warn('[SCHEDULED_RESTART] AppRestartDays supplied without AppRestartTime; disabled');
 }
-console.log(`[SCHEDULED_RESTART] ${config.AppRestartTime ? 'enabled' : 'disabled'} | time=${config.AppRestartTime || '-'} | days=${config.AppRestartDays.join(',')} | next=${formatScheduledRestartTime(scheduledRestartNextAt)}`);
+console.log(`[SCHEDULED_RESTART] ${scheduledRestartTimes.length ? 'enabled' : 'disabled'} | time=${scheduledRestartTimes.join(',') || '-'} | days=${config.AppRestartDays.join(',')} | next=${formatScheduledRestartTime(scheduledRestartNextAt)}`);
 armScheduledRestart();
 startIdleTimer();
