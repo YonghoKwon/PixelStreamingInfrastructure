@@ -22,6 +22,7 @@ logRedactor.install(console); // Wrap before configuration or file logging can e
 const offerWaitTimers = new Map();
 const OFFER_WAIT_TIMEOUT_MS = 20 * 1000;  // 20초 (여러 플레이어 동시 처리 시 지연 허용)
 let zombieRestartInProgress = false;  // 상단에 추가
+let scheduledRestartActive = null;
 
 function startOfferWaitTimer(playerId, streamerId) {
 	clearOfferWaitTimer(playerId);
@@ -34,6 +35,10 @@ function startOfferWaitTimer(playerId, streamerId) {
 		if (!player || player !== expectedPlayer || player.ws.readyState !== WebSocket.OPEN ||
 			player.streamerId !== streamerId || streamers.get(streamerId) !== expectedStreamer ||
 			!expectedStreamer || expectedStreamer.ws.readyState !== WebSocket.OPEN) return;
+		if (scheduledRestartActive?.owned) {
+			startOfferWaitTimer(playerId, streamerId);
+			return;
+		}
 		if (autoStartDisabled('offer-timeout')) {
 			player.ws.close(); // K policy: only this viewer; external supervision owns the UE.
 			return;
@@ -126,7 +131,7 @@ const STREAMER_PING_TIMEOUT_MS = 1 * 60 * 1000;  // 진단용 경과 시간; 재
 function startStreamerWatchdog() {
 	if (streamerWatchdogTimer) clearInterval(streamerWatchdogTimer);
 	streamerWatchdogTimer = setInterval(() => {
-		if (zombieRestartInProgress || appCommandInProgress || appCommandRunner.isBlocked()) return;
+		if (scheduledRestartActive?.owned || zombieRestartInProgress || appCommandInProgress || appCommandRunner.isBlocked()) return;
 		// Idle grace is observation-only. A UE/SFU socket is not browser demand.
 		// The independent ten-minute timer remains responsible for shutdown.
 		if (!hasBrowserDemand()) return;
@@ -448,12 +453,14 @@ function canStartApp() {
 }
 
 function scheduleSlowStartRetry() {
+	if (scheduledRestartActive?.owned) return;
 	if (autoStartDisabled('slow-retry')) return;
 	if (startRetryTimer || startRetryStatus.state !== 'exhausted' || config.AppStartCooldownMs === 0) return;
 	startRetryStatus.nextRetryAt = new Date(Date.now() + config.AppStartCooldownMs).toISOString();
 	startRetryTimer = setTimeout(() => {
 		startRetryTimer = null;
 		startRetryStatus.nextRetryAt = null;
+		if (scheduledRestartActive?.owned) return;
 		if (autoStartDisabled('slow-retry')) return;
 		if (startRetryStatus.state !== 'exhausted') return;
 		// A busy/blocked/no-demand round is skipped, never queued for an early retry.
@@ -516,13 +523,18 @@ function getStreamerHealth() {
 		lastStreamerPingTime === null ? 'awaiting-ping' : 'healthy', ageMs };
 }
 
-function runAppCommand(command, callback, slowRetry = false) {
-	if (command === START_CMD && autoStartDisabled('command-entry')) return false;
+function runAppCommand(command, callback, slowRetry = false, scheduled = false) {
+	if (scheduledRestartActive?.owned && !scheduled) return false;
+	if (command === START_CMD && !scheduled && autoStartDisabled('command-entry')) return false;
 	if (appCommandInProgress || appCommandRunner.isBlocked()) return false;
-	if (command === START_CMD && !canStartApp() && !slowRetry) return false;
+	if (command === START_CMD && !scheduled && !canStartApp() && !slowRetry) return false;
 	appCommandInProgress = command;
 	if (command === START_CMD) {
-		countStartAttempt(slowRetry);
+		if (scheduled) {
+			scheduledRestartActive.attempts++;
+			startRetryStatus.attempts = scheduledRestartActive.attempts;
+			startRetryStatus.state = 'attempting';
+		} else countStartAttempt(slowRetry);
 		appStopPending = true;
 		appStartTime = Date.now(); // All three START paths retain the same registration deadline.
 		if (streamerGoneTimerId) { clearTimeout(streamerGoneTimerId); streamerGoneTimerId = null; }
@@ -545,7 +557,7 @@ function runAppCommand(command, callback, slowRetry = false) {
 				}
 			}
 		}
-		if (!appCommandInProgress) {
+		if (!appCommandInProgress && !scheduledRestartActive?.owned && !scheduled) {
 			if (resumeStart && hasBrowserDemand() && !autoStartDisabled('after-stop')) startApp(true);
 			else if (resumeStop && browserPlayerCount() === 0) stopApp(true);
 		}
@@ -563,6 +575,7 @@ function forceCloseAllStreamers(reason) {
 }
 
 function startApp(forceStart = false) {
+	if (scheduledRestartActive?.owned) return;
 	if (!hasBrowserDemand() || appCommandRunner.isBlocked()) return;
 	// 진행 중인 stop 재시도 타이머가 있으면 취소 (새로 시작하는 경우)
 	if (stopRetryTimer) {
@@ -620,6 +633,7 @@ function startApp(forceStart = false) {
 }
 
 function stopApp(forceStop = false) {
+	if (scheduledRestartActive?.owned) return;
 	if (appCommandRunner.isBlocked()) return;
 	if (browserPlayerCount() > 0) return;
 	if (appCommandInProgress) {
@@ -649,6 +663,7 @@ function stopApp(forceStop = false) {
 	if (stopRetryTimer) { clearInterval(stopRetryTimer); stopRetryTimer = null; }
 	
 	stopRetryTimer = setInterval(() => {
+		if (scheduledRestartActive?.owned) return;
 		if (appCommandRunner.isBlocked()) {
 			clearInterval(stopRetryTimer);
 			stopRetryTimer = null;
@@ -695,14 +710,152 @@ function resetIdleTimer() {
 function startIdleTimer() {
 	resetIdleTimer();
 	if (config.AppIdleTimeoutMs === 0) return;
-	idleTimerStartTime = Date.now();  // 추가
+	if (scheduledRestartActive?.owned) return;
+	idleTimerStartTime = Date.now();
 	console.logColor(logging.Yellow, `[APP] 유휴 타이머 시작 (${config.AppIdleTimeoutMs / 60000}분 후 종료)`);
 	idleTimer = setTimeout(() => {
+		if (scheduledRestartActive?.owned) return;
 		if (browserPlayerCount() === 0) {
 			resetStartRetryStatus();
 			stopApp();
 		}
 	}, config.AppIdleTimeoutMs);
+}
+
+let scheduledRestartNextAt = v3.nextRestartAt(Date.now(), config.AppRestartTime, config.AppRestartDays);
+let scheduledRestartLast = { at: null, result: null };
+let scheduledRestartConsumedThrough = '';
+let scheduledRestartTimer = null;
+let scheduledRestartStepTimer = null;
+
+function recordScheduledRestart(result) {
+	scheduledRestartLast = { at: new Date().toISOString(), result };
+	const method = result === 'ok' ? 'log' : result.startsWith('failed:') ? 'error' : 'warn';
+	console[method](`[SCHEDULED_RESTART] ${result}`);
+}
+
+function finishScheduledRestart(result) {
+	const owned = scheduledRestartActive?.owned;
+	if (scheduledRestartStepTimer) clearTimeout(scheduledRestartStepTimer);
+	scheduledRestartStepTimer = null;
+	scheduledRestartActive = null;
+	if (!owned) return recordScheduledRestart(result);
+	startAfterStop = false;
+	stopAfterStart = false;
+	appStartTime = null;
+	appRunning = appStreamerCount(true) > 0;
+	if (result === 'ok') resetStartRetryStatus();
+	else if (result.startsWith('failed:')) {
+		startRetryStatus.state = 'exhausted';
+		startRetryStatus.at = new Date().toISOString();
+	}
+	recordScheduledRestart(result);
+	if (browserPlayerCount() === 0) startIdleTimer();
+}
+
+function queueScheduledRestartStep(delay) {
+	if (scheduledRestartStepTimer) clearTimeout(scheduledRestartStepTimer);
+	scheduledRestartStepTimer = setTimeout(() => {
+		scheduledRestartStepTimer = null;
+		stepScheduledRestart();
+	}, delay);
+	scheduledRestartStepTimer.unref?.();
+}
+
+function launchScheduledApp() {
+	const operation = scheduledRestartActive;
+	if (appCommandRunner.isBlocked()) return finishScheduledRestart('failed:launcher-blocked');
+	// A launcher can outlive the 60-second socket drain deadline. Keep its
+	// ownership gate until exit/timeout rather than overlapping STOP and START.
+	if (appCommandInProgress) return queueScheduledRestartStep(250);
+	if (operation.attempts >= config.AppStartMaxAttempts) return finishScheduledRestart('failed:registration-timeout');
+	operation.phase = 'register';
+	operation.startedAt = Date.now();
+	appRunning = true;
+	console.log(`[SCHEDULED_RESTART] START attempt ${operation.attempts + 1}/${config.AppStartMaxAttempts}`);
+	const accepted = runAppCommand(START_CMD, error => {
+		if (error) console.warn(`[SCHEDULED_RESTART] START command failed (${error.code || 'APP_COMMAND_FAILED'})`);
+	}, false, true);
+	if (!accepted) return finishScheduledRestart('failed:start-rejected');
+	queueScheduledRestartStep(250);
+}
+
+function stepScheduledRestart() {
+	const operation = scheduledRestartActive;
+	if (!operation) return;
+	if (appCommandRunner.isBlocked()) return finishScheduledRestart(
+		operation.phase === 'busy' ? 'skipped:launcher-blocked' : 'failed:launcher-blocked');
+	if (operation.phase === 'busy') {
+		if (appCommandInProgress || zombieRestartInProgress) {
+			if (Date.now() - operation.dueAt >= 600000) return finishScheduledRestart('skipped:command-busy');
+			return queueScheduledRestartStep(30000);
+		}
+		if (appStreamerCount(true) === 0 && (config.AppAutoStart || config.AppIdleTimeoutMs !== 0)) {
+			return finishScheduledRestart('skipped:ue-off');
+		}
+		// Busy is observation only. Acquire lifecycle ownership atomically
+		// after the shared runner is idle and the mode/UE checks pass.
+		operation.owned = true;
+		resetStartRetryStatus();
+		resetStopRetryStatus();
+		resetIdleTimer();
+		if (stopRetryTimer) { clearInterval(stopRetryTimer); stopRetryTimer = null; }
+		if (streamerGoneTimerId) { clearTimeout(streamerGoneTimerId); streamerGoneTimerId = null; }
+		stopStreamerWatchdog();
+		for (const id of [...offerWaitTimers.keys()]) clearOfferWaitTimer(id);
+		startAfterStop = false;
+		stopAfterStart = false;
+		appStartTime = null;
+		if (appStreamerCount(true) === 0) return launchScheduledApp();
+		for (const player of players.values()) {
+			if (!player.isSFU() && player.ws.readyState === WebSocket.OPEN) player.ws.close(1012, 'scheduled 3D restart');
+		}
+		operation.phase = 'stop';
+		operation.stopAt = Date.now();
+		console.log('[SCHEDULED_RESTART] STOP');
+		runAppCommand(STOP_CMD, error => {
+			if (error) console.warn(`[SCHEDULED_RESTART] STOP command failed (${error.code || 'APP_COMMAND_FAILED'})`);
+		}, false, true);
+		forceCloseAllStreamers('scheduled 3D restart');
+		appRunning = false;
+		appStopPending = false;
+	}
+	if (operation.phase === 'stop') {
+		const drained = !appCommandInProgress && appStreamerCount() === 0;
+		if (drained || Date.now() - operation.stopAt >= 60000) {
+			if (!drained) console.warn('[SCHEDULED_RESTART] STOP drain exceeded 60 seconds; proceeding after grace');
+			operation.phase = 'delay';
+			operation.startAt = Date.now() + 5000;
+		}
+	}
+	if (operation.phase === 'delay' && Date.now() >= operation.startAt) return launchScheduledApp();
+	if (operation.phase === 'register' && !appCommandInProgress) {
+		if (appStreamerCount(true) > 0) return finishScheduledRestart('ok');
+		if (Date.now() - operation.startedAt >= APP_START_TIMEOUT_MS) return launchScheduledApp();
+	}
+	queueScheduledRestartStep(250);
+}
+
+function armScheduledRestart() {
+	if (!config.AppRestartTime) return;
+	if (scheduledRestartTimer) clearTimeout(scheduledRestartTimer);
+	scheduledRestartTimer = setTimeout(() => {
+		scheduledRestartTimer = null;
+		const now = Date.now();
+		const dueAt = scheduledRestartNextAt;
+		if (now >= dueAt) {
+			scheduledRestartConsumedThrough = v3.restartDateKey(new Date(dueAt));
+			if (now - dueAt > 120000) recordScheduledRestart('skipped:late-wakeup');
+			else if (scheduledRestartActive) recordScheduledRestart('skipped:restart-active');
+			else {
+				scheduledRestartActive = { phase: 'busy', dueAt, attempts: 0 };
+				stepScheduledRestart();
+			}
+		}
+		scheduledRestartNextAt = v3.nextRestartAt(now, config.AppRestartTime, config.AppRestartDays, scheduledRestartConsumedThrough);
+		armScheduledRestart();
+	}, Math.max(1, Math.min(3600000, scheduledRestartNextAt - Date.now())));
+	scheduledRestartTimer.unref?.();
 }
 
 // set up rate limiter: maximum of five requests per minute
@@ -726,6 +879,9 @@ function getServiceStatus() {
 		stopRetry: { ...stopRetryStatus },
 		startRetry: { ...startRetryStatus },
 		streamerHealth: getStreamerHealth(),
+		scheduledRestart: { enabled: !!config.AppRestartTime, time: config.AppRestartTime,
+			days: [...config.AppRestartDays], nextAt: scheduledRestartNextAt === null ? null : new Date(scheduledRestartNextAt).toISOString(),
+			last: { ...scheduledRestartLast } },
 		mediaValidated: false };
 }
 app.get('/healthz', (req, res) => res.set('Cache-Control', 'no-store').status(200).json(getServiceStatus()));
@@ -1063,6 +1219,8 @@ class Player {
 	}
 
 	subscribe(streamerId) {
+		if (!this.isSFU() && scheduledRestartActive?.owned &&
+			(scheduledRestartActive.phase !== 'register' || streamers.get(streamerId)?.ws.readyState !== WebSocket.OPEN)) return;
 		if (!streamers.has(streamerId)) {
 			console.error(`subscribe: Player ${this.id} tried to subscribe to a non-existent streamer ${streamerId}`);
 			return;
@@ -1390,7 +1548,7 @@ function onStreamerDisconnected(streamer) {
 			streamerGoneTimerId = null;
 			// A short reconnect is not evidence that an exhausted STOP succeeded.
 			if (appStreamerCount() === 0) resetStopRetryStatus();
-			if (appStreamerCount() === 0 && !zombieRestartInProgress && !appCommandInProgress) {  // 좀비 재시작 중이면 덮어쓰지 않음
+			if (appStreamerCount() === 0 && !scheduledRestartActive?.owned && !zombieRestartInProgress && !appCommandInProgress) {  // 좀비 재시작 중이면 덮어쓰지 않음
 				appRunning = false;
 				appStartTime = null;  // 추가
 				console.logColor(logging.Orange, `[APP] 스트리머 없음 → appRunning=false`);
@@ -2235,7 +2393,7 @@ setInterval(() => {
 	}
 	
 	console.logColor(logging.Cyan,
-		`[${new Date().toISOString()}] HEARTBEAT | 모드: ${lifecycleMode} | Streamers: ${streamers.size} | Players: ${players.size} | Browsers: ${browserPlayerCount()} | UE ping: ${getStreamerHealth().state} | Uptime: ${uptimeStr} | 유휴: ${idleStr}`
+		`[${new Date().toISOString()}] HEARTBEAT | 모드: ${lifecycleMode} | Streamers: ${streamers.size} | Players: ${players.size} | Browsers: ${browserPlayerCount()} | UE ping: ${getStreamerHealth().state} | Uptime: ${uptimeStr} | 유휴: ${idleStr}${config.AppRestartTime ? ' | Next 3D restart: ' + new Date(scheduledRestartNextAt).toISOString() : ''}`
 	);
 	if (stopRetryStatus.state === 'exhausted') {
 		console.warn(`[HEARTBEAT] STOP retries exhausted (${stopRetryStatus.attempts}); operator inspection required`);
@@ -2252,4 +2410,9 @@ setInterval(() => {
 	}
 }, 30000);
 
+if (!config.AppRestartTime && config.restartDaysSpecified) {
+	console.warn('[SCHEDULED_RESTART] AppRestartDays supplied without AppRestartTime; disabled');
+}
+console.log(`[SCHEDULED_RESTART] ${config.AppRestartTime ? 'enabled' : 'disabled'} | time=${config.AppRestartTime || '-'} | days=${config.AppRestartDays.join(',')} | next=${scheduledRestartNextAt === null ? '-' : new Date(scheduledRestartNextAt).toISOString()}`);
+armScheduledRestart();
 startIdleTimer();
