@@ -73,6 +73,8 @@ function loadConfig(file, defaults, argv, fileSystem = fs) {
     // yargs may return these two CLI spellings as strings. JSON must use booleans.
     if (cli.AppAutoStart === 'true') cli.AppAutoStart = true;
     if (cli.AppAutoStart === 'false') cli.AppAutoStart = false;
+    if (typeof cli.AppRestartDays === 'string') cli.AppRestartDays = cli.AppRestartDays.split(',');
+    defaults = { AppRestartTime: '', AppRestartDays: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'], ...defaults };
     const config = { MaxWebSocketPayloadBytes: 4 * 1024 * 1024, AppStartMaxAttempts: 3, PlayerKeepaliveTimeoutMs: 30000, AppStartCooldownMs: 600000, AppIdleTimeoutMs: 600000, AppAutoStart: true, PlayerNegotiationGapMs: 1000, ...defaults, ...loaded, ...cli };
     if (!Number.isInteger(config.PlayerNegotiationGapMs) ||
         (config.PlayerNegotiationGapMs !== 0 && (config.PlayerNegotiationGapMs < 100 || config.PlayerNegotiationGapMs > 10000))) {
@@ -110,7 +112,42 @@ function loadConfig(file, defaults, argv, fileSystem = fs) {
         error.code = 'INVALID_CONFIG';
         throw error;
     }
+    if (typeof config.AppRestartTime !== 'string' ||
+        (config.AppRestartTime !== '' && !/^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/.test(config.AppRestartTime))) {
+        const error = new Error('Invalid AppRestartTime: expected empty string or HH:MM (value omitted).');
+        error.code = 'INVALID_CONFIG'; throw error;
+    }
+    if (!Array.isArray(config.AppRestartDays) || config.AppRestartDays.length === 0 ||
+        config.AppRestartDays.some(day => !['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].includes(day)) ||
+        new Set(config.AppRestartDays).size !== config.AppRestartDays.length) {
+        const error = new Error('Invalid AppRestartDays: expected distinct weekday array (value omitted).');
+        error.code = 'INVALID_CONFIG'; throw error;
+    }
+    // Preserve whether an operator supplied days, without exposing internal metadata in config logs.
+    Object.defineProperty(config, 'restartDaysSpecified', { value: Object.hasOwn(loaded, 'AppRestartDays') || Object.hasOwn(cli, 'AppRestartDays') });
     return config;
+}
+
+// Strictly future local wall-clock occurrence. Calendar arithmetic preserves DST.
+function nextRestartAt(now, time, days, consumedThrough = '') {
+    if (!time) return null;
+    const [hour, minute] = time.split(':').map(Number);
+    for (let offset = 0; offset < 15; offset++) {
+        const candidate = new Date(now);
+        candidate.setDate(candidate.getDate() + offset);
+        candidate.setHours(hour, minute, 0, 0);
+        if (candidate.getTime() > Number(now) && restartDateKey(candidate) > consumedThrough &&
+            days.includes(['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][candidate.getDay()])) return candidate.getTime();
+    }
+    // A backward clock change may put the consumed day more than two weeks ahead.
+    const future = new Date(consumedThrough + 'T12:00:00');
+    future.setDate(future.getDate() + 1);
+    future.setHours(0, 0, 0, 0);
+    return nextRestartAt(future.getTime() - 1, time, days);
+}
+
+function restartDateKey(date) {
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
 function certificatePath(baseDirectory, configuredPath) {
@@ -282,4 +319,4 @@ function createCommandRunner(options = {}) {
     return { run, snapshot, isBlocked: () => !!blocked, noteRegistered: () => { if (!blocked) timeouts = 0; } };
 }
 
-module.exports = { createLogRedactor, loadConfig, certificatePath, closeReason, monitorPlayerSocket, installErrorFileLogger, createCommandRunner };
+module.exports = { createLogRedactor, loadConfig, nextRestartAt, restartDateKey, certificatePath, closeReason, monitorPlayerSocket, installErrorFileLogger, createCommandRunner };

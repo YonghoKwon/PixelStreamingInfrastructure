@@ -229,6 +229,52 @@ START 한도가 소진되면 `AppStartCooldownMs`마다 대기 중인 브라우�
 협상 성공·10분 유휴 만료·시그널링 재기동은 느린 타이머와 집계를 함께 초기화한다.
 자동화 테스트의 기존 G 조건은 `AppStartCooldownMs=0`으로 분리해 기존 기대값을 유지한다.
 
+## 요일·시각별 3D 예약 재시작
+
+`AppRestartTime`은 서버 **현지 시각**의 엄격한 24시간 `HH:MM` 문자열이다.
+기본 `""` 또는 생략은 예약을 끈다. `AppRestartDays`는 기본 매일이며
+`Mon`, `Tue`, `Wed`, `Thu`, `Fri`, `Sat`, `Sun` 중 중복 없는 1개 이상의 배열이다.
+잘못된 시각·요일·타입은 입력값을 출력하지 않는 `INVALID_CONFIG`로 기동을 거부한다.
+요일만 지정하면 예약은 꺼진 채 시작 시 한 번 경고한다. 예시 config 두 개 모두 기본 예약은 꺼져 있다.
+
+```json
+{
+    "AppAutoStart": false,
+    "AppIdleTimeoutMs": 0,
+    "AppRestartTime": "04:00",
+    "AppRestartDays": ["Mon", "Wed", "Fri"]
+}
+```
+
+위 설정은 월·수·금 오전 4시에 접속자를 강제로 끊고 3D만 재시작한다.
+CLI도 `--AppRestartTime=04:00 --AppRestartDays=Mon,Wed,Fri`로 지정할 수 있다.
+cirrus 프로세스는 계속 실행된다. 예약 START는 `AppAutoStart: false`에서도 직접 실행한다.
+상시 모드(`AppAutoStart: false`, `AppIdleTimeoutMs: 0`)에서 UE가 꺼져 있으면 START만 실행한다.
+그 외 모드에서 UE가 꺼져 있으면 유휴 종료된 3D를 깨우지 않고 그 회차를 건너뛴다.
+
+시청 중인 브라우저는 `1012`, `scheduled 3D restart`로 즉시 종료하며 SFU는 제외한다.
+기존 명령 그대로 Linux는 `/dt/run.sh stop` → `/dt/run.sh restart`,
+Windows는 `RunDir\Stop_<port>.bat` → `RunDir\Start_<port>.bat`를 사용한다.
+STOP과 스트리머 종료를 최대 60초 기다린 뒤 5초 유예하고 START한다.
+60초 초과 시 경고하고 유예를 진행하며, STOP 런처가 아직 실행 중이면 기존 명령 완료/timeout까지
+직렬화를 유지한다. 실행기가 blocked가 되면 실패로 종료한다.
+예약 시작 시 시작 예산을 초기화하고 UE 미등록이면 START 시작 시점부터 90초마다
+`AppStartMaxAttempts`회까지 시도한다. 상시 모드는 실패 뒤 자동 START를 계속 반복하지 않으며 다음 예정일에 다시 시도한다.
+새 브라우저는 대기하다 UE 등록 후 F7a 자동 구독으로 연결된다.
+예약 중 접속 기동·유휴 종료·느린 재시도·좀비 복구와 후속 START/STOP이 중복 실행되지 않는다.
+
+실행기가 이미 blocked이면 그날은 건너뛴다. 다른 START/STOP·좀비 복구가 진행 중이면
+30초마다 확인하다 10분까지 끝나지 않으면 건너뛴다. cirrus를 예정 시각 이후 켜면 그날은 따라잡지 않는다.
+타이머는 최대 1시간 간격으로 현지 시각을 다시 계산한다. 절전·시계 변경으로 2분을 넘겨 깨어난 회차는
+경고와 함께 건너뛴다. 같은 프로세스에서 같은 현지 날짜는 두 번 실행하지 않는다.
+시각·요일 변경은 config를 바꾼 뒤 cirrus를 재기동해야 적용된다.
+
+시작 로그와 켜진 경우의 HEARTBEAT는 다음 예약을 서버 현지 시각 `YYYY-MM-DD HH:MM (Thu)` 형식(요일 영문 3글자)으로 표시한다.
+`/healthz.scheduledRestart`는 `enabled`, `time`, `days`, `nextAt`와 `last: { at, result }`를 제공한다.
+`nextAt`·`last.at`은 기존대로 ISO 문자열(UTC)이며, 아직 실행하지 않았거나 꺼진 경우 해당 값은 `null`이다.
+`result`는 `ok`, `skipped:<이유>`, `failed:<이유>`이다. `/readyz`의 기존 판정식은 유지한다.
+요일·시각의 실제 적용은 서버의 `TZ`/운영체제 시간대를 확인한다.
+
 ## 검증 명령
 
 ```sh
