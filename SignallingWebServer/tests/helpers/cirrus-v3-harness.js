@@ -8,7 +8,8 @@ const vm = require('node:vm');
 const { EventEmitter } = require('node:events');
 
 function createHarness(overrides = {}, options = {}) {
-    let now = 1000000;
+    let now = options.now ?? 1000000;
+    const startedAt = now;
     const timers = new Set();
     const commands = [];
     const logs = [];
@@ -26,7 +27,7 @@ function createHarness(overrides = {}, options = {}) {
             const next = [...timers].filter(t => t.active && t.next <= end).sort((a, b) => a.next - b.next)[0];
             if (!next) break;
             if (++iterations > 100000) throw new Error('Runaway fake timer');
-            now = next.next;
+            now = Math.max(now, next.next);
             if (next.interval) next.next += next.delay;
             else cancel(next);
             next.fn();
@@ -88,7 +89,7 @@ function createHarness(overrides = {}, options = {}) {
     express.static = () => () => {};
     const middlewareFactory = () => () => {};
     const fakeProcess = new EventEmitter();
-    Object.assign(fakeProcess, { platform: options.platform || 'win32', env: {}, uptime: () => (now - 1000000) / 1000,
+    Object.assign(fakeProcess, { platform: options.platform || 'win32', env: {}, uptime: () => (now - startedAt) / 1000,
         exit(code) { this.exitCode = code; this.exited = true; } });
     const fakeFs = {
         existsSync() { return true; },
@@ -164,7 +165,7 @@ function createHarness(overrides = {}, options = {}) {
         return socket;
     }
     return {
-        advance, commands, logs, servers, run, app, process: fakeProcess,
+        advance, jump(milliseconds) { now += milliseconds; }, commands, logs, servers, run, app, process: fakeProcess,
         player: url => connect('playerServer', url), streamer,
         sfu() { const socket = connect('sfuServer'); socket.message({ type: 'endpointId', id: 'SFU' }); return socket; },
         playerId(socket) { context.selectedSocket = socket; return run('[...players.values()].find(p => p.ws === selectedSocket).id'); },
