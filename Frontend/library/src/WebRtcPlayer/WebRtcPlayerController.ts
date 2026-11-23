@@ -110,6 +110,7 @@ export class WebRtcPlayerController {
     reconnectAttempt: number;
     disconnectMessage: string;
     subscribedStream: string;
+    private subscribedWebSocket: WebSocket;
     signallingUrlBuilder: () => string;
     autoJoinTimer: ReturnType<typeof setTimeout> = undefined;
 
@@ -209,6 +210,9 @@ export class WebRtcPlayerController {
             }
         });
         this.webSocketController.onClose.addEventListener('close', (event : CustomEvent) => {
+            // The streamer preference survives reconnects, but its subscription and peer do not.
+            this.subscribedWebSocket = undefined;
+            this.closePeerConnection();
             // when we refresh the page during a stream we get the going away code.
             // in that case we don't want to reconnect since we're navigating away.
             // https://developer.mozilla.org/en-US/docs/Web/API/CloseEvent/code
@@ -241,6 +245,7 @@ export class WebRtcPlayerController {
             if (willTryReconnect) {
                 // need a small delay here to prevent reconnect spamming
                 setTimeout(() => {
+                    if (!this.shouldReconnect) return;
                     this.isReconnecting = true;
                     this.reconnectAttempt++;
                     this.tryReconnect(event.detail.reason);
@@ -279,8 +284,14 @@ export class WebRtcPlayerController {
                     return;
                 }
 
-                const peer = this.peerConnectionController.peerConnection;
-                if (streamerid === this.subscribedStream && peer &&
+                const peer = this.peerConnectionController?.peerConnection;
+                if (!peer || this.webSocketController.webSocket?.readyState !== WebSocket.OPEN) {
+                    // Remember selections made while reconnecting; subscribe after config/list arrive.
+                    this.subscribedStream = streamerid;
+                    return;
+                }
+                if (streamerid === this.subscribedStream &&
+                    this.subscribedWebSocket === this.webSocketController.webSocket && peer &&
                     peer.connectionState !== 'closed' && peer.connectionState !== 'failed') return;
 
                 // close the current peer connection and create a new one
@@ -291,6 +302,7 @@ export class WebRtcPlayerController {
                 );
                 this.subscribedStream = streamerid;
                 this.webSocketController.sendSubscribe(streamerid);
+                this.subscribedWebSocket = this.webSocketController.webSocket;
                 this.webSocketController.sendAddUser(streamerid);
             }
         );
