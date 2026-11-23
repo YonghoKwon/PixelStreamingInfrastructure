@@ -26,6 +26,104 @@ const PixelStreamingApplicationStyles =
     });
 PixelStreamingApplicationStyles.applyStyleSheet();
 
+// Install local overlay hooks on a normally constructed Application (no native-class inheritance).
+function installConnectingMessage(application: Application): void {
+    const stream = application.stream;
+    const original = {
+        showTextOverlay: application.showTextOverlay.bind(application),
+        showDisconnectOverlay: application.showDisconnectOverlay.bind(application),
+        showErrorOverlay: application.showErrorOverlay.bind(application),
+        onDisconnect: application.onDisconnect.bind(application),
+        onPlayStream: application.onPlayStream.bind(application),
+        showPlayOverlay: application.showPlayOverlay.bind(application),
+        onPlayStreamError: application.onPlayStreamError.bind(application),
+        showAfkOverlay: application.showAfkOverlay.bind(application)
+    };
+    let connectingSince: number | undefined;
+    let connectingTimer: number | undefined;
+    let intentionallyDisconnected = false;
+
+    const showConnectingMessage = (): void => {
+        const seconds = Math.floor((performance.now() - connectingSince) / 1000);
+        const delayed = seconds >= 30 ? '<br>연결이 지연되고 있습니다' : '';
+        original.showTextOverlay('<div style="text-align: center">화면 연결 중입니다. ' + seconds + '초' + delayed + '</div>');
+    };
+    const startConnecting = (reset = false): void => {
+        if (connectingSince !== undefined && !reset) return;
+        window.clearInterval(connectingTimer);
+        connectingSince = performance.now();
+        showConnectingMessage();
+        connectingTimer = window.setInterval(showConnectingMessage, 1000);
+    };
+    const stopConnecting = (): void => {
+        window.clearInterval(connectingTimer);
+        connectingTimer = undefined;
+        connectingSince = undefined;
+        if (application.currentOverlay === application.infoOverlay) application.hideCurrentOverlay();
+    };
+
+    application.showTextOverlay = (text: string): void => {
+        if (connectingSince !== undefined) showConnectingMessage();
+        else original.showTextOverlay(text);
+    };
+    application.showDisconnectOverlay = (text: string): void => {
+        // A later server push can still connect after streamer-list retries give up.
+        if (connectingSince !== undefined) showConnectingMessage();
+        else original.showDisconnectOverlay(text);
+    };
+    application.showErrorOverlay = (text: string): void => {
+        if (connectingSince !== undefined) showConnectingMessage();
+        else original.showErrorOverlay(text);
+    };
+    application.onWebRtcAutoConnect = (): void => startConnecting();
+    application.onWebRtcConnecting = (): void => startConnecting();
+    application.onDisconnect = (eventString: string, allowClickToReconnect: boolean): void => {
+        if (!allowClickToReconnect && !intentionallyDisconnected) {
+            startConnecting(true);
+            application.statsPanel?.onDisconnect();
+        } else {
+            stopConnecting();
+            original.onDisconnect(eventString, allowClickToReconnect);
+        }
+    };
+    application.onPlayStream = (): void => {
+        // playStream and videoInitialized precede video.play(); wait for actual playing.
+        if (connectingSince === undefined) original.onPlayStream();
+    };
+    application.showPlayOverlay = (): void => {
+        stopConnecting();
+        original.showPlayOverlay();
+    };
+    application.onPlayStreamError = (message: string): void => {
+        stopConnecting();
+        original.onPlayStreamError(message);
+    };
+    application.showAfkOverlay = (countDown: number, dismissAfk: () => void): void => {
+        stopConnecting();
+        original.showAfkOverlay(countDown, dismissAfk);
+    };
+
+    stream.videoElementParent.querySelector('video')?.addEventListener('playing', stopConnecting);
+    stream.addEventListener('streamConnect', () => {
+        intentionallyDisconnected = false;
+        startConnecting(true);
+    });
+    stream.addEventListener('streamReconnect', () => {
+        intentionallyDisconnected = false;
+        startConnecting(true);
+    });
+    stream.addEventListener('streamDisconnect', () => {
+        intentionallyDisconnected = true;
+        stopConnecting();
+    });
+    stream.addEventListener('afkTimedOut', () => {
+        intentionallyDisconnected = true;
+        stopConnecting();
+    });
+    // PixelStreaming starts AutoConnect before Application and these hooks exist.
+    startConnecting();
+}
+
 document.body.onload = function() {
 	// Example of how to set the logger level
 	// Logger.SetLoggerVerbosity(10);
@@ -77,6 +175,7 @@ document.body.onload = function() {
 		xrControlsConfig: { creationMode: UIElementCreationMode.Disable },
 		onColorModeChanged: (isLightMode) => PixelStreamingApplicationStyles.setColorMode(isLightMode)
 	});
+	installConnectingMessage(application);
 	// document.getElementById("centrebox").appendChild(application.rootElement);
 	document.body.appendChild(application.rootElement);
 }
