@@ -291,6 +291,7 @@ export class WebRtcPlayerController {
                 );
                 this.subscribedStream = streamerid;
                 this.webSocketController.sendSubscribe(streamerid);
+                this.webSocketController.sendAddUser(streamerid);
             }
         );
 

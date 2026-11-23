@@ -8,6 +8,7 @@ import { Logger } from '../Logger/Logger';
 export enum MessageSendTypes {
     LIST_STREAMERS = 'listStreamers',
     SUBSCRIBE = 'subscribe',
+    ADDUSER = 'addUser',
     UNSUBSCRIBE = 'unsubscribe',
     ICE_CANDIDATE = 'iceCandidate',
     OFFER = 'offer',
@@ -31,7 +32,9 @@ export class MessageSend implements Send {
     payload() {
         Logger.Log(
             Logger.GetStackTrace(),
-            'Sending => \n' + JSON.stringify(this, undefined, 4),
+            this.type === MessageSendTypes.ADDUSER
+                ? 'Sending => addUser (user details omitted)'
+                : 'Sending => \n' + JSON.stringify(this, undefined, 4),
             6
         );
         return JSON.stringify(this);
@@ -60,6 +63,22 @@ export class MessageSubscribe extends MessageSend {
         super();
         this.type = MessageSendTypes.SUBSCRIBE;
         this.streamerId = streamerid;
+    }
+}
+
+export class MessageAddUser extends MessageSend {
+    streamerId: string;
+    uuid: unknown;
+    userEmpNo: unknown;
+    userName: unknown;
+
+    constructor(streamerid: string, uuid: unknown, userEmpNo: unknown, userName: unknown) {
+        super();
+        this.type = MessageSendTypes.ADDUSER;
+        this.streamerId = streamerid;
+        this.uuid = uuid;
+        this.userEmpNo = userEmpNo;
+        this.userName = userName;
     }
 }
 
