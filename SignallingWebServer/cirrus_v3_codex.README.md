@@ -328,3 +328,12 @@ Docker의 실제 영상·IME·10분 STOP(G4), 빈 Linux 환경 setup 실행(G5)�
 로컬 신규 통합 검사는 동적 포트, 합성 스트리머, 운영 런처를 가로채는 테스트 스텁만 사용한다.
 
 이 변경은 WSL/Dozen 렌더링 속도나 CPU 경유 전송 비용을 개선하는 변경이 아니다. 로컬 H264 성공을 native RHEL8, 공인 전체 인증서 체인, 실제 SFU 영상 분배, 회사/실센서·오디오·성능 수용으로 확대하지 않는다.
+# 3Finex(player.js) 서버
+
+`cirrus_v3_3Finex.js`를 `cirrus.js`로 배포하고 같은 버전의 `modules/cirrus-v3-support.js`를 함께 둡니다. v3 설정과 접속 시 기동·유휴 종료 동작은 그대로 적용됩니다.
+
+브라우저는 구독 전후에 `{ "type": "addUser", "streamerId": "UE", "uuid": "...", "userEmpNo": "...", "userName": "..." }`를 보냅니다. 문자열·숫자 필드만 256자 이내 문자열로 저장하며 재전송하면 해당 필드를 덮어씁니다. SFU는 무시하고 UE로 전달하지 않습니다. `GET /link-user`는 현재 player의 `[{ id, uuid, userEmpNo, userName }]`를 반환하며 미수신 필드는 생략합니다. CORS는 `*`, `OPTIONS /link-user`는 200입니다.
+
+주의: `/link-user`는 인증 없이 사번·이름을 모든 출처에 반환합니다.
+
+이 서버는 두 HTTP 모드 모두 `GET /`, `GET /cert-check`(연결 확인), `GET /healthz`, `GET /readyz`, `GET·OPTIONS /link-user`만 허용하고 나머지는 403으로 차단합니다. player.html/player.js 등 화면 파일은 별도 웹 서버에서 제공하고 WebSocket으로 연결해야 합니다. WebSocket 업그레이드는 기존대로 동작합니다.
