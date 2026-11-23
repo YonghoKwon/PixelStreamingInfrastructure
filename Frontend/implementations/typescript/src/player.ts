@@ -10,6 +10,17 @@ const PixelStreamingApplicationStyles =
             '#uiFeatures #controls': {
                 top: '50%',
                 transform: 'translateY(-50%)'
+            },
+            '#uiFeatures #controls #fullscreen-btn': {
+                width: '1.5rem',
+                height: '1.5rem',
+                lineHeight: '0.875rem',
+                // Override the default fullscreen padding, which is also important.
+                padding: '0.25rem !important'
+            },
+            '#uiFeatures #controls #fullscreen-btn svg': {
+                width: '100%',
+                height: '100%'
             }
         }
     });
