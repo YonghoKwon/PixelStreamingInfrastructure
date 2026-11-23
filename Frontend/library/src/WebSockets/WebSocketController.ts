@@ -7,6 +7,11 @@ import { SignallingProtocol } from './SignallingProtocol';
 
 // declare the new method for the websocket interface
 declare global {
+    interface Window {
+        uuid?: unknown;
+        getUserFromSessionByKey?: (key: string) => unknown;
+    }
+
     interface WebSocket {
         onmessagebinary?(event?: MessageEvent): void;
     }
@@ -152,6 +157,24 @@ export class WebSocketController {
     sendSubscribe(streamerid: string) {
         const payload = new MessageSend.MessageSubscribe(streamerid);
         this.webSocket.send(payload.payload());
+    }
+
+    sendAddUser(streamerid: string) {
+        try {
+            const parent = window.parent;
+            if (parent === window || typeof parent.getUserFromSessionByKey !== 'function') {
+                return;
+            }
+            const payload = new MessageSend.MessageAddUser(
+                streamerid,
+                window.uuid ?? parent.uuid,
+                parent.getUserFromSessionByKey('user_emp_no'),
+                parent.getUserFromSessionByKey('user_name')
+            );
+            this.webSocket.send(payload.payload());
+        } catch {
+            console.warn('addUser skipped: parent user information unavailable.');
+        }
     }
 
     sendUnsubscribe() {
