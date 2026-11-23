@@ -3,9 +3,16 @@
 export * from '@epicgames-ps/lib-pixelstreamingfrontend-ue5.3';
 export * from '@epicgames-ps/lib-pixelstreamingfrontend-ui-ue5.3';
 import { Config, PixelStreaming } from '@epicgames-ps/lib-pixelstreamingfrontend-ue5.3';
-import { Application, PixelStreamingApplicationStyle } from '@epicgames-ps/lib-pixelstreamingfrontend-ui-ue5.3';
+import { Application, PixelStreamingApplicationStyle, UIElementCreationMode } from '@epicgames-ps/lib-pixelstreamingfrontend-ui-ue5.3';
 const PixelStreamingApplicationStyles =
-    new PixelStreamingApplicationStyle();
+    new PixelStreamingApplicationStyle({
+        customStyles: {
+            '#uiFeatures #controls': {
+                top: '50%',
+                transform: 'translateY(-50%)'
+            }
+        }
+    });
 PixelStreamingApplicationStyles.applyStyleSheet();
 
 document.body.onload = function() {
@@ -48,6 +55,15 @@ document.body.onload = function() {
 
 	const application = new Application({
 		stream,
+		settingsPanelConfig: {
+			isEnabled: false,
+			visibilityButtonConfig: { creationMode: UIElementCreationMode.Disable }
+		},
+		statsPanelConfig: {
+			isEnabled: false,
+			visibilityButtonConfig: { creationMode: UIElementCreationMode.Disable }
+		},
+		xrControlsConfig: { creationMode: UIElementCreationMode.Disable },
 		onColorModeChanged: (isLightMode) => PixelStreamingApplicationStyles.setColorMode(isLightMode)
 	});
 	// document.getElementById("centrebox").appendChild(application.rootElement);
