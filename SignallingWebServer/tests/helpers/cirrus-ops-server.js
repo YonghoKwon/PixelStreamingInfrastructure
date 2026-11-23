@@ -15,17 +15,18 @@ async function freePort() {
     const s = net.createServer(); await new Promise(resolve => s.listen(0, '127.0.0.1', resolve));
     const port = s.address().port; await new Promise(resolve => s.close(resolve)); return port;
 }
-async function start(overrides = {}, { renamed = false } = {}) {
+async function start(overrides = {}, { renamed = false, entry = process.env.CIRRUS_V3_ENTRY || 'cirrus_v3_codex.js' } = {}) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ps-cirrus-ops-'));
     const root = path.resolve(__dirname, '../..');
     const ports = []; while (ports.length < 3) { const p = await freePort(); if (!ports.includes(p)) ports.push(p); }
     const config = { UseFrontend: false, UseHTTPS: false, UseMatchmaker: false, UseAuthentication: false,
         LogToFile: true, LogVerbose: false, HttpPort: ports[0], StreamerPort: ports[1], SFUPort: ports[2], ...overrides };
     const configFile = path.join(dir, 'config.json'); fs.writeFileSync(configFile, JSON.stringify(config));
-    let entry = path.join(root, 'cirrus_v3_codex.js');
+    const source = path.join(root, entry);
+    entry = source;
     if (renamed) {
         // Same bytes, name changed; dependencies resolve from this worktree only.
-        entry = path.join(dir, 'cirrus.js'); fs.copyFileSync(path.join(root, 'cirrus_v3_codex.js'), entry);
+        entry = path.join(dir, 'cirrus.js'); fs.copyFileSync(source, entry);
         fs.symlinkSync(path.join(root, 'modules'), path.join(dir, 'modules'), 'junction');
     }
     const s = { dir, config, sockets: [], logs: '', stderr: '', exit: null };

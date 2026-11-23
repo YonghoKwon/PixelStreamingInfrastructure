@@ -20,7 +20,7 @@ async function start(overrides = {}) {
         LogToFile: false, LogVerbose: false, HttpPort: ports[0], StreamerPort: ports[1], SFUPort: ports[2],
         HomepageFile: path.join(dir, 'index.html'), AdditionalRoutes: { '/qa-static': path.relative(serverRoot, dir) }, ...overrides };
     const file = path.join(dir, 'config.json'); fs.writeFileSync(file, JSON.stringify(config));
-    const child = spawn(process.execPath, [path.join(serverRoot, 'cirrus_v3_codex.js'), '--configFile', file], { cwd: dir });
+    const child = spawn(process.execPath, [path.join(serverRoot, process.env.CIRRUS_V3_ENTRY || 'cirrus_v3_codex.js'), '--configFile', file], { cwd: dir });
     const s = { child, config, dir, sockets: [], logs: '', exit: null };
     child.stdout.on('data', bytes => s.logs += bytes); child.stderr.on('data', bytes => s.logs += bytes);
     child.on('exit', (code, signal) => s.exit = { code, signal });

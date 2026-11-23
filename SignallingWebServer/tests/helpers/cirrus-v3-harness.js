@@ -144,7 +144,7 @@ function createHarness(overrides = {}, options = {}) {
         setTimeout: (fn, delay) => schedule(fn, delay), clearTimeout: cancel,
         setInterval: (fn, delay) => schedule(fn, delay, true), clearInterval: cancel
     });
-    const file = path.resolve(__dirname, '../../cirrus_v3_codex.js');
+    const file = path.resolve(__dirname, '../..', options.entry || process.env.CIRRUS_V3_ENTRY || 'cirrus_v3_codex.js');
     vm.runInContext(fs.readFileSync(file, 'utf8'), context, { filename: file });
     const run = code => vm.runInContext(code, context);
     function connect(serverName, url = '/') {

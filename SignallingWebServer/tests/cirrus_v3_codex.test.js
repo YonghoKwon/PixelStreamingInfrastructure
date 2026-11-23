@@ -204,7 +204,7 @@ test('existing mDNS rewriting and BrowserSendOffer behavior are unchanged', () =
 
 test('production v1 forwarding and shared timings remain; v3 startup retry is explicit', () => {
     const read=file=>fs.readFileSync(path.resolve(__dirname,'..',file),'utf8').replace(/\r\n/g,'\n');
-    const baseline=read('cirrus_v1.js'), current=read('cirrus_v3_codex.js');
+    const baseline=read('cirrus_v1.js'), current=read(process.env.CIRRUS_V3_ENTRY || 'cirrus_v3_codex.js');
     const section=source=>source.slice(source.indexOf('function forwardPlayerMessage('),source.indexOf('function onPlayerDisconnected('));
     assert.equal(section(current),section(baseline));
     for(const name of ['OFFER_WAIT_TIMEOUT_MS','STREAMER_PING_TIMEOUT_MS','APP_IDLE_TIMEOUT_MS','STOP_RETRY_INTERVAL_MS','STOP_RETRY_MAX']){
