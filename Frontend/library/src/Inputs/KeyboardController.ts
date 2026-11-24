@@ -24,6 +24,7 @@ export class KeyboardController {
     private keyboardEventListenerTracker = new EventListenerTracker();
     private ime?: ImeInput;
     private forwardedKeys = new Set<number>();
+    private composingPhysicalKeys = new Map<string, number>();
 
     /*
      * New browser APIs have moved away from KeyboardEvent.keyCode to KeyboardEvent.Code.
@@ -157,7 +158,7 @@ export class KeyboardController {
         if (this.videoElement) {
             this.ime = new ImeInput(this.videoElement,
                 () => this.config.isFlagEnabled(Flags.EnableIME),
-                text => this.sendCommittedText(text), () => this.releaseKeys());
+                text => this.sendCommittedText(text), preserveComposing => this.releaseKeys(preserveComposing));
         }
         const keyDownHandler = (ev: KeyboardEvent) => this.handleOnKeyDown(ev);
         const keyUpHandler = (ev: KeyboardEvent) => this.handleOnKeyUp(ev);
@@ -189,10 +190,20 @@ export class KeyboardController {
         this.keyboardEventListenerTracker.unregisterAll();
     }
 
-    private releaseKeys() {
-        for (const key of this.forwardedKeys) this.toStreamerMessagesProvider.toStreamerHandlers.get('KeyUp')?.([key]);
-        this.forwardedKeys.clear();
-        this.activeKeysProvider.getActiveKeys().length = 0;
+    private releaseKeys(preserveComposing = false) {
+        const preserved = preserveComposing ? new Set(this.composingPhysicalKeys.values()) : new Set<number>();
+        const activeKeys = this.activeKeysProvider.getActiveKeys();
+        for (const key of this.forwardedKeys) {
+            if (preserved.has(key)) continue;
+            this.toStreamerMessagesProvider.toStreamerHandlers.get('KeyUp')?.([key]);
+            this.forwardedKeys.delete(key);
+            const index = activeKeys.indexOf(key);
+            if (index >= 0) activeKeys.splice(index, 1);
+        }
+        if (!preserveComposing) {
+            this.composingPhysicalKeys.clear();
+            activeKeys.length = 0;
+        }
     }
 
     private sendCommittedText(text: string) {
@@ -213,10 +224,14 @@ export class KeyboardController {
      * @param keyboardEvent - Keyboard event
      */
     handleOnKeyDown(keyboardEvent: KeyboardEvent) {
-        if (this.isLocalEditor(keyboardEvent) || this.ime?.isComposing(keyboardEvent)) return;
+        if (this.isLocalEditor(keyboardEvent)) return;
+        const composing = this.ime?.isComposing(keyboardEvent);
+        const physicalKey = /^(Key[A-Z]|Digit[0-9])$/.test(keyboardEvent.code)
+            ? this.CodeToKeyCode[keyboardEvent.code] : undefined;
+        if (composing && !physicalKey) return;
         if (this.ime?.ownsFocus() && (keyboardEvent.ctrlKey || keyboardEvent.metaKey) &&
             (keyboardEvent.code === 'KeyV' || keyboardEvent.keyCode === 86)) return;
-        const keyCode = this.getKeycode(keyboardEvent);
+        const keyCode = composing ? physicalKey : this.getKeycode(keyboardEvent);
         if (!keyCode) {
             return;
         }
@@ -234,12 +249,13 @@ export class KeyboardController {
         const toStreamerHandlers =
             this.toStreamerMessagesProvider.toStreamerHandlers;
         toStreamerHandlers.get('KeyDown')([
-            this.getKeycode(keyboardEvent),
+            keyCode,
             keyboardEvent.repeat ? 1 : 0
         ]);
         const activeKeys = this.activeKeysProvider.getActiveKeys();
         if (!activeKeys.includes(keyCode)) activeKeys.push(keyCode);
         this.forwardedKeys.add(keyCode);
+        if (composing) this.composingPhysicalKeys.set(keyboardEvent.code, keyCode);
         // Backspace is not considered a keypress in JavaScript but we need it
         // to be so characters may be deleted in a UE text entry field.
         if (keyCode === SpecialKeyCodes.backSpace) {
@@ -264,8 +280,15 @@ export class KeyboardController {
      */
     handleOnKeyUp(keyboardEvent: KeyboardEvent) {
         if (this.isLocalEditor(keyboardEvent)) { this.releaseKeys(); return; }
-        if (this.ime?.isComposing(keyboardEvent)) return;
-        const keyCode = this.getKeycode(keyboardEvent);
+        // Match the recorded physical key even if keyup no longer carries IME flags.
+        const recordedKey = this.composingPhysicalKeys.get(keyboardEvent.code) ??
+            (keyboardEvent.code === '' && [...this.composingPhysicalKeys.values()].includes(keyboardEvent.keyCode)
+                ? keyboardEvent.keyCode : undefined);
+        const physicalKey = /^(Key[A-Z]|Digit[0-9])$/.test(keyboardEvent.code)
+            ? this.CodeToKeyCode[keyboardEvent.code] : undefined;
+        const composing = this.ime?.isComposing(keyboardEvent);
+        if (composing && !recordedKey && !physicalKey) return;
+        const keyCode = recordedKey ?? (composing ? physicalKey : this.getKeycode(keyboardEvent));
         if (!keyCode) {
             return;
         }
@@ -276,6 +299,9 @@ export class KeyboardController {
         if (!this.forwardedKeys.has(keyCode)) return;
         toStreamerHandlers.get('KeyUp')([ keyCode ]);
         this.forwardedKeys.delete(keyCode);
+        for (const [code, value] of this.composingPhysicalKeys) {
+            if (value === keyCode) this.composingPhysicalKeys.delete(code);
+        }
         const activeKeys = this.activeKeysProvider.getActiveKeys();
         const index = activeKeys.indexOf(keyCode);
         if (index >= 0) activeKeys.splice(index, 1);

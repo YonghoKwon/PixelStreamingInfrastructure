@@ -12,7 +12,7 @@ export class ImeInput {
         private video: HTMLVideoElement,
         private enabled: () => boolean,
         private sendText: (text: string) => void,
-        private releaseKeys: () => void
+        private releaseKeys: (preserveComposing?: boolean) => void
     ) {
         const input = document.createElement('textarea');
         this.element = input;
@@ -42,7 +42,7 @@ export class ImeInput {
             });
         });
         this.listen(input, 'compositionstart', () => {
-            this.releaseKeys(); this.composing = true;
+            this.releaseKeys(true); this.composing = true;
         });
         this.listen(input, 'compositionend', () => {
             if (!this.composing) return;

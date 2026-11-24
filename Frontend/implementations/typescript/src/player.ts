@@ -26,6 +26,40 @@ const PixelStreamingApplicationStyles =
     });
 PixelStreamingApplicationStyles.applyStyleSheet();
 
+function installInputModeIndicator(application: Application): void {
+    const button = application.rootElement.querySelector<HTMLElement>('#fullscreen-btn');
+    if (!button?.parentElement) return;
+    const indicator = document.createElement('span');
+    indicator.id = 'input-mode-indicator';
+    indicator.textContent = '-';
+    indicator.setAttribute('aria-label', '추정 입력 모드');
+    indicator.title = '키 입력으로 추정한 한/영 모드';
+    // Absolute positioning leaves the controls height and fullscreen button untouched.
+    Object.assign(indicator.style, {
+        position: 'absolute', width: '1.5rem', height: '1.5rem',
+        lineHeight: '1.5rem', textAlign: 'center', fontSize: '0.875rem',
+        pointerEvents: 'none', margin: '0', padding: '0', boxSizing: 'border-box', color: 'var(--color2)',
+        background: 'var(--color4)', borderRadius: '0.25rem'
+    });
+    button.parentElement.appendChild(indicator);
+    const position = (): void => {
+        indicator.style.left = button.offsetLeft + 'px';
+        indicator.style.top = (button.offsetTop + button.offsetHeight + 4) + 'px';
+        // Hidden controls hide their child too; mirror button-only hiding as well.
+        const style = getComputedStyle(button);
+        indicator.style.display = style.display === 'none' || style.visibility === 'hidden' ? 'none' : 'block';
+    };
+    new MutationObserver(position).observe(button, { attributes: true, attributeFilter: ['class', 'style', 'hidden'] });
+    window.addEventListener('resize', position);
+    document.addEventListener('fullscreenchange', position);
+    document.addEventListener('keydown', (event: KeyboardEvent): void => {
+        if (!/^Key[A-Z]$/.test(event.code)) return;
+        if (event.isComposing || event.keyCode === 229 || event.key === 'Process') indicator.textContent = '한';
+        else if (/^[a-zA-Z]$/.test(event.key)) indicator.textContent = '영';
+    }, true);
+    position();
+}
+
 // Install local overlay hooks on a normally constructed Application (no native-class inheritance).
 function installConnectingMessage(application: Application): void {
     const stream = application.stream;
@@ -178,4 +212,5 @@ document.body.onload = function() {
 	installConnectingMessage(application);
 	// document.getElementById("centrebox").appendChild(application.rootElement);
 	document.body.appendChild(application.rootElement);
+	installInputModeIndicator(application);
 }
